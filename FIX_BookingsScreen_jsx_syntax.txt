@@ -1,0 +1,44 @@
+Sửa lỗi Babel BookingsScreen.tsx dòng ~891
+==========================================
+
+SAI (ternary lồng object `{}` → Unexpected token):
+
+{isPtg
+  ? "⏳ Chờ khách đặt cọc 10% để giữ lịch."
+  : {"💳 Đặt cọc 10% (" + formatVnd(getDepositAmount(b)) + ") để bắt đầu."}}
+
+ĐÚNG (dùng template string):
+
+{isPtg
+  ? "⏳ Chờ khách đặt cọc 10% để giữ lịch."
+  : `💳 Đặt cọc 10% (${formatVnd(getDepositAmount(b))}) để bắt đầu.`}
+
+
+Tìm tương tự cho thanh toán 90% — SAI:
+
+{isPtg
+  ? "⏳ Chờ khách thanh toán 90% còn lại."
+  : {"💳 Thanh toán nốt 90% (" + formatVnd(getRemainingAmount(b)) + ") để nhận album."}}
+
+ĐÚNG:
+
+{isPtg
+  ? "⏳ Chờ khách thanh toán 90% còn lại."
+  : `💳 Thanh toán nốt 90% (${formatVnd(getRemainingAmount(b))}) để nhận album.`}
+
+
+Cách nhanh (VS Code Find & Replace trong BookingsScreen.tsx):
+
+Find:
+: {"💳 Đặt cọc 10% (" + formatVnd(getDepositAmount(b)) + ") để bắt đầu."}
+
+Replace:
+: `💳 Đặt cọc 10% (${formatVnd(getDepositAmount(b))}) để bắt đầu.`
+
+Find:
+: {"💳 Thanh toán nốt 90% (" + formatVnd(getRemainingAmount(b)) + ") để nhận album."}
+
+Replace:
+: `💳 Thanh toán nốt 90% (${formatVnd(getRemainingAmount(b))}) để nhận album.`
+
+Save → Vite tự reload.
