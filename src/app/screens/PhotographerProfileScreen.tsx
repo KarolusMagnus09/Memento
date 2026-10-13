@@ -14,6 +14,7 @@ import { ReportFlow, ReportIcon } from "../components/shared/ReportFlow";
 import { EMPTY_SUMMARY, fetchReviewSummary, submitProfileReport, fetchPhotoLikes, togglePhotoLike, type ReviewSummary } from "../lib/social";
 import { useProgressiveList } from "../hooks/useProgressiveList";
 import { useState, useEffect, useRef, useCallback } from "react";
+import { uniqueStyleLabels } from "../lib/photographerDisplay";
 
 const ALL_PINS_ID = "__all__";
 const STANDALONE_ID = "__standalone__";
@@ -40,7 +41,7 @@ export default function PhotographerProfileScreen({
 }) {
   const [tab, setTab] = useState<"portfolio" | "reviews" | "pricing" | "rental">("portfolio");
   const [ptg, setPtg] = useState(photographer);
-  const saved = savedIds.includes(ptg.id);
+  const saved = savedIds.some((x) => Number(x) === Number(ptg.id));
   const isPending = isOwner && (applicationStatus === "submitted" || applicationStatus === "draft");
   const isRejected = isOwner && applicationStatus === "rejected";
   const totalLikes = Object.values(ptg.pin_likes || {}).reduce((a, b) => a + (b || 0), 0);
@@ -380,7 +381,7 @@ export default function PhotographerProfileScreen({
             )}
             {/* Khách: Ghim + Báo cáo · Chủ hồ sơ: không có nút nào */}
             {!isOwner && (
-              <button onClick={() => toggleSave(ptg.id)}
+              <button type="button" onClick={(e) => { e.stopPropagation(); toggleSave(Number(ptg.id)); }}
                 aria-label={saved ? "Bỏ ghim hồ sơ" : "Ghim hồ sơ"} aria-pressed={saved}
                 className="w-9 h-9 rounded-full backdrop-blur-sm flex items-center justify-center"
                 style={{ background: saved ? TEAL_LIGHT : "rgba(255,255,255,0.2)" }}>
@@ -429,7 +430,7 @@ export default function PhotographerProfileScreen({
             <span className="text-xs text-muted-foreground">{ptg.location}</span>
           </div>
           <div className="flex flex-wrap gap-1.5 mt-2">
-            {ptg.tags.map(t => <Badge key={t} text={t} color="teal" />)}
+            {uniqueStyleLabels(ptg).slice(0, 6).map(t => <Badge key={t} text={t} color="teal" />)}
           </div>
         </div>
 
@@ -519,7 +520,7 @@ export default function PhotographerProfileScreen({
             </ScrollText>
           </div>
 
-          {(ptg.equipment || ptg.experience_years || (ptg.shooting_styles?.length ?? 0) > 0 || ptg.tags.length > 0 || (ptg.languages?.length ?? 0) > 0 || ptg.work_model || (ptg.work_locations?.length ?? 0) > 0) && (
+          {(ptg.equipment || ptg.experience_years || uniqueStyleLabels(ptg).length > 0 || (ptg.languages?.length ?? 0) > 0 || ptg.work_model || (ptg.work_locations?.length ?? 0) > 0) && (
             <>
               {ptg.equipment && (
                 <div className="mb-2.5">
@@ -532,22 +533,22 @@ export default function PhotographerProfileScreen({
                 </div>
               )}
 
-              {((ptg.shooting_styles?.length ?? 0) > 0 || ptg.tags.length > 0) && (
+              {uniqueStyleLabels(ptg).length > 0 && (
                 <div className="mb-2.5">
                   <p className="text-xs font-bold flex items-center gap-1.5 mb-1.5" style={{ color: TEAL }}>
                     <span className="opacity-70">🖼️</span> Thể loại chụp
                   </p>
                   <div className="flex flex-wrap gap-1.5">
                     {(aboutExpanded
-                      ? [...(ptg.shooting_styles ?? []), ...ptg.tags]
-                      : [...(ptg.shooting_styles ?? []), ...ptg.tags].slice(0, 4)
-                    ).map((t, i) => (
-                      <span key={`${t}-${i}`} className="text-xs font-semibold px-2.5 py-1 rounded-full"
+                      ? uniqueStyleLabels(ptg)
+                      : uniqueStyleLabels(ptg).slice(0, 4)
+                    ).map((t) => (
+                      <span key={t} className="text-xs font-semibold px-2.5 py-1 rounded-full"
                         style={{ background: "#e8f5f0", color: TEAL_MID }}>{t}</span>
                     ))}
-                    {!aboutExpanded && [...(ptg.shooting_styles ?? []), ...ptg.tags].length > 4 && (
+                    {!aboutExpanded && uniqueStyleLabels(ptg).length > 4 && (
                       <span className="text-xs text-muted-foreground self-center">
-                        +{[...(ptg.shooting_styles ?? []), ...ptg.tags].length - 4}
+                        +{uniqueStyleLabels(ptg).length - 4}
                       </span>
                     )}
                   </div>

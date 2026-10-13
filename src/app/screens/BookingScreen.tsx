@@ -597,7 +597,7 @@ export default function BookingScreen({
                 <p>• Tạm tính dịch vụ: {formatVnd(totalPrice)}</p>
                 <p>• Phí dịch vụ Memento (10%): {formatVnd(Math.round(totalPrice * 0.1))}</p>
                 <p>• Bạn thanh toán: <strong>{formatVnd(totalPrice)}</strong></p>
-                <p className="mt-1">Sau khi bạn thanh toán, photographer nhận trước 30%. Khi lịch hẹn hoàn tất, Memento chuyển phần còn lại (sau khi trừ phí 10%).</p>
+                <p className="mt-1">Sau khi bạn thanh toán, photographer nhận trước 20%. Khi lịch hẹn hoàn tất, Memento chuyển phần còn lại (sau khi trừ phí 10%).</p>
               </div>
             <button
           type="button"

@@ -13,17 +13,19 @@ export async function setPinned(photographerId: number, pinned: boolean): Promis
   const { data: auth } = await supabase.auth.getUser();
   const uid = auth.user?.id;
   if (!uid) return "Bạn cần đăng nhập để ghim";
+  const pid = Number(photographerId);
+  if (!Number.isFinite(pid)) return "ID nhiếp ảnh gia không hợp lệ";
   if (pinned) {
     const { error } = await supabase
       .from("pinned_photographers")
-      .upsert({ user_id: uid, photographer_id: photographerId }, { onConflict: "user_id,photographer_id", ignoreDuplicates: true });
+      .upsert({ user_id: uid, photographer_id: pid }, { onConflict: "user_id,photographer_id", ignoreDuplicates: true });
     return error ? error.message : null;
   }
   const { error } = await supabase
     .from("pinned_photographers")
     .delete()
     .eq("user_id", uid)
-    .eq("photographer_id", photographerId);
+    .eq("photographer_id", pid);
   return error ? error.message : null;
 }
 

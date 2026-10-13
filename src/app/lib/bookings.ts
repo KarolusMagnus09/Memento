@@ -4,8 +4,8 @@ import { supabase } from "./supabase";
 export type BookingStatus =
   | "pending"
   | "confirmed"
-  | "processing"   // user đã CK, admin đang xử lý / chờ chuyển 30%
-  | "active"       // đã ứng 30%, đơn đang hiệu lực
+  | "processing"   // user đã CK, admin đang xử lý / chờ chuyển 20%
+  | "active"       // đã ứng 20%, đơn đang hiệu lực
   | "deposit_paid" // legacy → coi như processing
   | "handover"     // PTG đã gửi Drive bàn giao
   | "closing"      // 2 bên đang / đã xác nhận hoàn tất
@@ -89,8 +89,8 @@ const LOCAL_KEY = "memento:bookings:v1";
 const COMMISSION_RATE = 0.1; // platform giữ 10% hoa hồng
 /** User trả 100% tổng deal khi PTG xác nhận */
 const USER_PAY_RATE = 1;
-/** Ứng PTG 30% ngay sau khi user thanh toán */
-const PTG_ADVANCE_RATE = 0.3;
+/** Ứng PTG 20% ngay sau khi user thanh toán */
+const PTG_ADVANCE_RATE = 0.2;
 
 function readLocal(): BookingRow[] {
   try {
@@ -117,7 +117,7 @@ export function formatVnd(n: number) {
 
 /**
  * User thanh toán 100% tổng deal (ví dụ 100k).
- * Memento giữ tiền → ứng PTG 30k → khi xong chuyển thêm 60k (PTG tổng 90k, platform 10k).
+ * Memento giữ tiền → ứng PTG 20% → khi xong chuyển thêm 70% (PTG tổng 90%, platform 10%).
  */
 export function calcDeposit(total: number) {
   // alias: số tiền user phải trả = 100%
@@ -138,12 +138,12 @@ export function calcPtgPayout(total: number) {
   return Math.round(Number(total || 0) * (1 - COMMISSION_RATE));
 }
 
-/** Ứng PTG ngay sau user thanh toán = 30% */
+/** Ứng PTG ngay sau user thanh toán = 20% */
 export function calcPtgAdvance(total: number) {
   return Math.round(Number(total || 0) * PTG_ADVANCE_RATE);
 }
 
-/** Phần còn lại chuyển PTG khi xong deal = 60% */
+/** Phần còn lại chuyển PTG khi xong deal = 70% */
 export function calcPtgFinalTransfer(total: number) {
   return calcPtgPayout(total) - calcPtgAdvance(total);
 }
@@ -163,6 +163,37 @@ export function isAwaitingDeposit(b: BookingRow) {
   return b.status === "confirmed" && !b.deposit_paid_at;
 }
 
+/** User đã bấm «Đã chuyển khoản», chờ admin xác nhận */
+export const USER_REPORTED_PREFIX = "USER_REPORTED";
+
+export function isUserTransferReported(b: BookingRow): boolean {
+  const ref = (b.payment_ref || "").trim();
+  return ref.startsWith(USER_REPORTED_PREFIX) && !b.deposit_paid_at && b.status === "confirmed";
+}
+
+/** User báo đã CK — status giữ confirmed, QR tạm khóa đến khi admin xử lý */
+export async function reportUserTransfer(id: string): Promise<string | null> {
+  const bill = `MMT-${id.replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+  const patch: Record<string, unknown> = {
+    payment_ref: `${USER_REPORTED_PREFIX}|${new Date().toISOString()}|${bill}`,
+    updated_at: new Date().toISOString(),
+  };
+  const { error } = await supabase.from("bookings").update(patch).eq("id", id);
+  if (error) return error.message;
+  return null;
+}
+
+/** Admin: chưa nhận tiền → mở lại QR (xóa báo cáo user) */
+export async function rejectUserTransferReport(id: string): Promise<string | null> {
+  const patch: Record<string, unknown> = {
+    payment_ref: null,
+    updated_at: new Date().toISOString(),
+  };
+  const { error } = await supabase.from("bookings").update(patch).eq("id", id);
+  if (error) return error.message;
+  return null;
+}
+
 export function isAwaitingFinal(_b: BookingRow) {
   return false;
 }
@@ -171,7 +202,7 @@ export function isAwaitingPayment(b: BookingRow) {
   return isAwaitingDeposit(b);
 }
 
-/** User đã trả, admin chưa ứng 30% */
+/** User đã trả, admin chưa ứng 20% */
 export function isProcessing(b: BookingRow) {
   if (b.status === "processing") return true;
   if ((b.status === "deposit_paid" || b.status === "paid") && !b.ptg_advance_paid_at && !b.final_paid_at) {
@@ -180,20 +211,33 @@ export function isProcessing(b: BookingRow) {
   return false;
 }
 
-/** Đã ứng 30%, đang trong thời gian thực hiện */
+/** Đã ứng 20%, đang trong thời gian thực hiện (chưa có Drive) */
 export function isActiveOrder(b: BookingRow) {
-  if (["rejected", "cancelled", "completed", "handover", "closing"].includes(b.status)) return false;
+  if (["rejected", "cancelled", "completed", "closing"].includes(b.status)) return false;
+  // Có Drive → đã sang bàn giao, không còn phase chụp
+  if (b.drive_url || b.drive_submitted_at) return false;
   if (b.status === "active") return true;
-  return !!b.ptg_advance_paid_at && !b.drive_url && !b.drive_submitted_at;
+  // deposit_paid + đã ứng cọc, chưa Drive
+  if (b.ptg_advance_paid_at && !b.drive_url) return true;
+  // status handover nhưng chưa có link = PTG bấm chụp xong sớm → vẫn coi là đang chụp
+  if (b.status === "handover" && !b.drive_url) return true;
+  return false;
 }
 
-/** Đang trong quá trình chụp / hiệu lực */
+/** Đang trong quá trình chụp / hiệu lực (chưa bàn giao ảnh) */
 export function isShooting(b: BookingRow) {
-  return isActiveOrder(b) || b.status === "active";
+  return isActiveOrder(b);
 }
 
+/** Bàn giao ảnh — CHỈ khi đã có link Drive từ PTG */
 export function isHandover(b: BookingRow) {
-  return b.status === "handover";
+  if (b.status === "closing" || b.status === "completed") return false;
+  return !!(b.drive_url || b.drive_submitted_at) && (
+    b.status === "handover" ||
+    b.status === "active" ||
+    b.status === "deposit_paid" ||
+    !!b.ptg_advance_paid_at
+  );
 }
 
 export function isClosing(b: BookingRow) {
@@ -223,8 +267,8 @@ export function bookingPhaseLabel(b: BookingRow): string {
   if (b.status === "pending") return "Chờ xác nhận";
   if (b.status === "confirmed") return "Chờ thanh toán";
   if (isProcessing(b)) return "Đang xử lý đơn";
-  if (b.status === "active" || isActiveOrder(b)) return "Đơn đang hiệu lực";
-  if (b.status === "handover") return "Bàn giao ảnh";
+  if (isHandover(b)) return "Bàn giao ảnh";
+  if (isShooting(b) || isActiveOrder(b)) return "Đang chụp ảnh";
   if (b.status === "closing") return "Chờ xác nhận hoàn tất";
   if (b.status === "completed") return "Hoàn thành đơn";
   if (b.status === "rejected") return "Đã từ chối";
@@ -394,7 +438,8 @@ export async function updateBookingStatus(
 
 /** Admin / webhook: ghi nhận đã nhận cọc 10% */
 export async function markDepositPaid(id: string, paymentRef?: string): Promise<string | null> {
-  return updateBookingStatus(id, "processing", {
+  // Dùng deposit_paid (có trong CHECK cũ). processing có thể chưa được DB cho phép.
+  return updateBookingStatus(id, "deposit_paid", {
     payment_status: "deposit_paid",
     deposit_paid_at: new Date().toISOString(),
     payment_ref: paymentRef || null,
@@ -402,7 +447,7 @@ export async function markDepositPaid(id: string, paymentRef?: string): Promise<
   });
 }
 
-/** Admin đã chuyển 30% cọc cho PTG → đơn hiệu lực */
+/** Admin đã chuyển 20% cọc cho PTG → đơn hiệu lực */
 export async function markPtgAdvancePaid(id: string, ref?: string): Promise<string | null> {
   return updateBookingStatus(id, "active", {
     ptg_advance_paid_at: new Date().toISOString(),
@@ -425,9 +470,14 @@ export async function markBookingPaid(id: string, paymentRef?: string): Promise<
 }
 
 export async function markShootDone(id: string): Promise<string | null> {
-  return updateBookingStatus(id, "handover", {
+  // Chỉ ghi nhận đã chụp xong — phase bàn giao chỉ khi PTG gửi Drive (submitDriveUrl)
+  const patch: Record<string, unknown> = {
     shoot_done_at: new Date().toISOString(),
-  });
+    updated_at: new Date().toISOString(),
+  };
+  const { error } = await supabase.from("bookings").update(patch).eq("id", id);
+  if (error) return error.message;
+  return null;
 }
 
 export async function submitDriveUrl(id: string, driveUrl: string, note?: string): Promise<string | null> {
@@ -462,7 +512,7 @@ export async function confirmOrderSuccess(
   });
 }
 
-/** Admin chuyển nốt 60% (sau khi 2 bên xác nhận) */
+/** Admin chuyển nốt 70% (sau khi 2 bên xác nhận) */
 export async function markPtgFinalPaid(id: string, ref?: string): Promise<string | null> {
   return updateBookingStatus(id, "closing", {
     ptg_final_paid_at: new Date().toISOString(),

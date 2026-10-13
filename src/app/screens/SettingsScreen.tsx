@@ -1,9 +1,81 @@
-import { ChevronLeft, ChevronRight, Key, Laptop, MapPin, Mail, Building2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Key, Laptop, MapPin, Mail, Building2, Eye, EyeOff } from "lucide-react";
 import type { Screen } from "../types";
 import type { Profile } from "../hooks/useProfile";
 import { TEAL, TEAL_LIGHT, BG, VN_BANKS } from "../constants";
 import { supabase } from "../lib/supabase";
 import { useEffect, useState } from "react";
+
+const LOC_PREF_KEY = "memento:location-pref:v1";
+
+type LocPref = {
+  /** Người dùng muốn dùng vị trí (toggle trong app) */
+  enabled: boolean;
+};
+
+function loadLocPref(): LocPref {
+  try {
+    const raw = localStorage.getItem(LOC_PREF_KEY);
+    if (!raw) return { enabled: false };
+    const p = JSON.parse(raw) as Partial<LocPref>;
+    return { enabled: !!p.enabled };
+  } catch {
+    return { enabled: false };
+  }
+}
+
+function saveLocPref(p: LocPref) {
+  try {
+    localStorage.setItem(LOC_PREF_KEY, JSON.stringify(p));
+  } catch {
+    /* ignore */
+  }
+}
+
+type BrowserLocState = "granted" | "denied" | "prompt" | "unsupported";
+
+async function queryBrowserLocationState(): Promise<BrowserLocState> {
+  try {
+    if (typeof navigator === "undefined" || !navigator.geolocation) return "unsupported";
+    // Permissions API (Chrome/Android/iOS Safari mới)
+    if (navigator.permissions?.query) {
+      try {
+        const st = await navigator.permissions.query({ name: "geolocation" as PermissionName });
+        if (st.state === "granted") return "granted";
+        if (st.state === "denied") return "denied";
+        return "prompt";
+      } catch {
+        /* fall through */
+      }
+    }
+    return "prompt";
+  } catch {
+    return "unsupported";
+  }
+}
+
+/** Xin quyền vị trí bằng cách gọi getCurrentPosition (trigger prompt hệ thống). */
+function requestBrowserLocation(): Promise<"granted" | "denied"> {
+  return new Promise((resolve) => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      resolve("denied");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      () => resolve("granted"),
+      (err) => {
+        // 1 = PERMISSION_DENIED
+        resolve(err?.code === 1 ? "denied" : "denied");
+      },
+      { enableHighAccuracy: false, timeout: 12000, maximumAge: 60000 }
+    );
+  });
+}
+
+function maskAccount(acc: string): string {
+  const s = String(acc || "").replace(/\s/g, "");
+  if (s.length <= 4) return "••••";
+  return "•".repeat(Math.min(s.length - 4, 12)) + s.slice(-4);
+}
 
 export default function SettingsScreen({
   setScreen,
@@ -28,6 +100,20 @@ export default function SettingsScreen({
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [showBankForm, setShowBankForm] = useState(false);
+  /** Ẩn STK mặc định — chỉ hiện khi bấm mắt */
+  const [revealBank, setRevealBank] = useState(false);
+
+  // ── Quyền vị trí ──
+  const [locEnabled, setLocEnabled] = useState(false);
+  const [locBrowser, setLocBrowser] = useState<BrowserLocState>("prompt");
+  const [locBusy, setLocBusy] = useState(false);
+  const [locHint, setLocHint] = useState<string | null>(null);
+
+  useEffect(() => {
+    const pref = loadLocPref();
+    setLocEnabled(pref.enabled);
+    queryBrowserLocationState().then(setLocBrowser);
+  }, []);
 
   useEffect(() => {
     if (!profile?.id || !isPtg) return;
@@ -52,7 +138,6 @@ export default function SettingsScreen({
       if (app?.bank_code) setBankCode(app.bank_code);
       if (app?.bank_account_name) setBankAccountName(app.bank_account_name);
       else if (app?.full_name) setBankAccountName(app.full_name);
-      // Hiện STK hiện tại để PTG xem trước khi đổi; form đổi vẫn nhập STK mới
 
       const { data: req } = await supabase
         .from("bank_change_requests")
@@ -98,6 +183,67 @@ export default function SettingsScreen({
     } finally {
       setSaving(false);
     }
+  }
+
+  async function toggleLocation() {
+    setLocHint(null);
+    setLocBusy(true);
+    try {
+      if (locEnabled) {
+        // Tắt trong app (không thu hồi quyền hệ thống — user làm trong Settings OS)
+        setLocEnabled(false);
+        saveLocPref({ enabled: false });
+        setLocHint("Đã tắt dùng vị trí trong Memento.");
+        return;
+      }
+
+      // Bật: xin quyền hệ thống nếu chưa có
+      const state = await queryBrowserLocationState();
+      setLocBrowser(state);
+
+      if (state === "unsupported") {
+        setLocHint("Thiết bị / trình duyệt không hỗ trợ vị trí.");
+        return;
+      }
+
+      if (state === "denied") {
+        setLocHint(
+          "Quyền vị trí đã bị từ chối. Vào Cài đặt hệ thống → Memento (hoặc trình duyệt) → bật Vị trí, rồi thử lại."
+        );
+        return;
+      }
+
+      if (state === "prompt") {
+        const result = await requestBrowserLocation();
+        setLocBrowser(result);
+        if (result !== "granted") {
+          setLocHint("Bạn đã từ chối quyền vị trí. Có thể bật lại trong Cài đặt hệ thống.");
+          return;
+        }
+      } else if (state === "granted") {
+        // Đã có quyền — xác nhận vẫn dùng được
+        const result = await requestBrowserLocation();
+        if (result !== "granted") {
+          setLocBrowser("denied");
+          setLocHint("Không lấy được vị trí. Kiểm tra Cài đặt hệ thống.");
+          return;
+        }
+      }
+
+      setLocEnabled(true);
+      saveLocPref({ enabled: true });
+      setLocHint("Đã bật vị trí. Memento chỉ dùng khi bạn tìm PTG gần đây.");
+    } finally {
+      setLocBusy(false);
+    }
+  }
+
+  function locStatusLabel(): string {
+    if (locBrowser === "unsupported") return "Không hỗ trợ";
+    if (!locEnabled) return "Đang tắt";
+    if (locBrowser === "denied") return "Bị chặn";
+    if (locBrowser === "granted") return "Đã bật";
+    return "Chưa cấp quyền";
   }
 
   return (
@@ -190,18 +336,41 @@ export default function SettingsScreen({
               <div>
                 {hasBank && currentBank?.bank_account && (
                   <div className="px-4 py-3 border-b border-border bg-muted/40">
-                    <p className="text-[11px] font-bold text-muted-foreground uppercase tracking-wide mb-1">
-                      Tài khoản hiện tại
-                    </p>
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <p className="text-[11px] font-bold text-muted-foreground uppercase tracking-wide">
+                        Tài khoản hiện tại
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setRevealBank((v) => !v)}
+                        className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-muted"
+                        aria-label={revealBank ? "Ẩn số tài khoản" : "Hiện số tài khoản"}
+                        title={revealBank ? "Ẩn" : "Hiện"}
+                      >
+                        {revealBank ? (
+                          <EyeOff size={16} style={{ color: TEAL }} />
+                        ) : (
+                          <Eye size={16} style={{ color: TEAL }} />
+                        )}
+                      </button>
+                    </div>
                     <p className="text-sm font-semibold">
                       {currentBank.bank_name || currentBank.bank_code || "—"}
                     </p>
                     <p className="text-sm mt-0.5">
-                      STK: <span className="font-mono font-semibold">{currentBank.bank_account}</span>
+                      STK:{" "}
+                      <span className="font-mono font-semibold">
+                        {revealBank
+                          ? currentBank.bank_account
+                          : maskAccount(currentBank.bank_account)}
+                      </span>
                     </p>
                     {currentBank.bank_account_name && (
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        Chủ TK: {currentBank.bank_account_name}
+                        Chủ TK:{" "}
+                        {revealBank
+                          ? currentBank.bank_account_name
+                          : maskName(currentBank.bank_account_name)}
                       </p>
                     )}
                   </div>
@@ -282,13 +451,64 @@ export default function SettingsScreen({
           </p>
           <div className="flex items-center gap-3 px-4 py-3.5">
             <MapPin size={18} style={{ color: TEAL }} />
-            <p className="flex-1 text-sm font-semibold">Vị trí</p>
-            <span className="text-xs font-semibold" style={{ color: TEAL_LIGHT }}>
-              Khi dùng ứng dụng
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold">Vị trí</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">
+                Dùng để gợi ý nhiếp ảnh gia gần bạn. Chỉ bật khi bạn cho phép.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={locBusy || locBrowser === "unsupported"}
+              onClick={toggleLocation}
+              className="relative w-11 h-6 rounded-full transition-colors flex-shrink-0 disabled:opacity-50"
+              style={{ background: locEnabled && locBrowser === "granted" ? TEAL : "#d1d5db" }}
+              aria-label="Bật/tắt vị trí"
+              role="switch"
+              aria-checked={locEnabled && locBrowser === "granted"}
+            >
+              <span
+                className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform"
+                style={{
+                  transform:
+                    locEnabled && locBrowser === "granted" ? "translateX(20px)" : "translateX(0)",
+                }}
+              />
+            </button>
+          </div>
+          <div className="px-4 pb-3 flex items-center justify-between gap-2">
+            <span className="text-[11px] text-muted-foreground">
+              Trạng thái: <strong style={{ color: TEAL }}>{locStatusLabel()}</strong>
             </span>
           </div>
+          {locHint && (
+            <div className="px-4 pb-3 text-[11px] leading-relaxed text-muted-foreground">
+              {locHint}
+            </div>
+          )}
+          {locBrowser === "denied" && (
+            <div className="px-4 pb-3 text-[11px] leading-relaxed text-amber-800 bg-amber-50 border-t border-amber-100">
+              Quyền đã bị chặn ở hệ thống. Mở Cài đặt máy → Ứng dụng / Trình duyệt → Memento → bật
+              Vị trí, rồi quay lại bật tại đây.
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
+}
+
+function maskName(name: string): string {
+  const parts = String(name || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (parts.length === 0) return "••••";
+  if (parts.length === 1) {
+    const s = parts[0];
+    if (s.length <= 2) return "•".repeat(s.length);
+    return s[0] + "•".repeat(s.length - 1);
+  }
+  // Hiện chữ cái đầu mỗi từ, che phần còn lại
+  return parts.map((p) => p[0] + "•".repeat(Math.max(p.length - 1, 1))).join(" ");
 }

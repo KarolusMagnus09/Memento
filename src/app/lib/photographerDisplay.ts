@@ -57,16 +57,45 @@ export function formatLocations(p: Photographer, max = 3): string {
   return getLocations(p, max).join(", ") || "—";
 }
 
-/** Tags hiển thị tối đa `max` cái (mặc định 3). */
-export function getTags(p: Photographer, max = 3): string[] {
-  return (Array.isArray(p.tags) ? p.tags : []).slice(0, max);
+/** Chuẩn hoá để gộp "NetworkingEvents" / "#NetworkingEvents" / "Networking Events" thành 1. */
+function styleKey(s: string): string {
+  return String(s ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/[^a-z0-9]/g, "");
 }
 
-/** Tag hiện trên ảnh bìa thẻ ngoài: các phong cách chụp (tối đa `max`), không có thì dùng specialty. */
+/** Gộp shooting_styles + tags, bỏ trùng (kể cả bản có #). */
+export function uniqueStyleLabels(p: Photographer): string[] {
+  const raw = [
+    ...(Array.isArray(p.shooting_styles) ? p.shooting_styles : []),
+    ...(Array.isArray(p.tags) ? p.tags : []),
+  ].filter(Boolean) as string[];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of raw) {
+    const cleaned = String(t).replace(/^#+/, "").trim();
+    if (!cleaned) continue;
+    const k = styleKey(cleaned);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(cleaned);
+  }
+  return out;
+}
+
+/** Tags hiển thị tối đa `max` cái (mặc định 3). */
+export function getTags(p: Photographer, max = 3): string[] {
+  return uniqueStyleLabels(p).slice(0, max);
+}
+
+/** Tag hiện trên thẻ ngoài: phong cách chụp (đã dedupe), không có thì specialty. */
 export function getCardTags(p: Photographer, max = 3): string[] {
-  const styles = Array.isArray(p.shooting_styles) ? p.shooting_styles.filter(Boolean) : [];
+  const styles = uniqueStyleLabels(p);
   const base = styles.length > 0 ? styles : (p.specialty ? [p.specialty] : []);
-  return Array.from(new Set(base)).slice(0, max);
+  return base.slice(0, max);
 }
 
 /** Ảnh đại diện của thẻ PTG — DÙNG CHUNG cho Trang chủ & Khám phá để luôn giống nhau. */
@@ -80,5 +109,6 @@ export function formatRating(p: Photographer): string {
 }
 
 export function getReviewCount(p: Photographer): number {
+  if (typeof p.review_count === "number") return p.review_count;
   return Array.isArray(p.reviews) ? p.reviews.length : 0;
 }

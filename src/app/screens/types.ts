@@ -21,6 +21,10 @@ export type Photographer = {
   price: number;
   rating: number;
   bookings: number;
+  /** Số đánh giá thật (từ RPC get_photographers_stats) */
+  review_count?: number;
+  /** Số tim hồ sơ thật (từ RPC get_photographers_stats) */
+  hearts?: number;
   specialty: string;
   avatar: string;
   cover: string;

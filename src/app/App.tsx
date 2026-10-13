@@ -7,6 +7,9 @@ import { BG } from "./constants";
 import { usePhotographers } from "./hooks/usePhotographers";
 import { useProfile } from "./hooks/useProfile";
 import { BottomNav } from "./components/shared/BottomNav";
+import { ChatToast } from "./components/shared/ChatToast";
+import { useChatNotifications } from "./hooks/useChatNotifications";
+import type { ChatTarget } from "./lib/chat";
 
 import LoginScreen from "./screens/LoginScreen";
 import OnboardingFlow from "./screens/onboarding/OnboardingFlow";
@@ -82,7 +85,19 @@ export default function App() {
     fetchPins().then((ids) => { if (alive) setSavedIds(ids); });
     return () => { alive = false; };
   }, [session?.user.id]);
-  const [chatPartner, setChatPartner] = useState<Photographer | null>(null);
+  // Chat: cuộc trò chuyện đang mở + màn sẽ quay về khi bấm Back
+  const [chatTarget, setChatTarget] = useState<ChatTarget | null>(null);
+  const [chatBack, setChatBack] = useState<Screen>("messages");
+  // Badge tin chưa đọc + banner tin mới (realtime). Phải gọi trước các `return` sớm bên dưới.
+  const { unread, toast: chatToast, dismissToast, refreshUnread } = useChatNotifications(
+    session?.user.id ?? null,
+    screen === "chat" && chatTarget ? chatTarget.id : null,
+  );
+  const openChat = (t: ChatTarget, from: Screen = "messages") => {
+    setChatTarget(t);
+    setChatBack(from);
+    setScreen("chat");
+  };
   /** Đang xem hồ sơ PTG của chính mình (từ menu Profile) */
   const [viewingOwnProfile, setViewingOwnProfile] = useState(false);
   const [ownAppStatus, setOwnAppStatus] = useState<"draft" | "submitted" | "approved" | "rejected" | null>(null);
@@ -93,7 +108,6 @@ export default function App() {
   useEffect(() => {
     if (photographers.length > 0 && !activePhotographer) {
       setActivePhotographer(photographers[0]);
-      setChatPartner(photographers[0]);
     }
   }, [photographers, activePhotographer]);
 
@@ -114,14 +128,26 @@ export default function App() {
     }
   }
 
-  // Ghim / bỏ ghim: cập nhật ngay trên màn hình, lưu lên server, lỗi thì trả lại như cũ
+  // Ghim / bỏ ghim: 1 state dùng chung Home + Khám phá + hồ sơ; lưu server; lỗi thì rollback
   const toggleSave = (id: number) => {
-    const wasPinned = savedIds.includes(id);
-    setSavedIds(prev => (wasPinned ? prev.filter(x => x !== id) : [...prev, id]));
-    setPinned(id, !wasPinned).then(err => {
-      if (err) setSavedIds(prev => (wasPinned ? [...prev, id] : prev.filter(x => x !== id)));
+    const pid = Number(id);
+    if (!Number.isFinite(pid)) return;
+    const wasPinned = savedIds.some((x) => Number(x) === pid);
+    setSavedIds((prev) =>
+      wasPinned ? prev.filter((x) => Number(x) !== pid) : [...prev.map(Number).filter(Number.isFinite), pid]
+    );
+    setPinned(pid, !wasPinned).then((err) => {
+      if (err) {
+        setSavedIds((prev) =>
+          wasPinned
+            ? [...prev.map(Number).filter(Number.isFinite), pid]
+            : prev.filter((x) => Number(x) !== pid)
+        );
+      }
     });
   };
+
+  const isSaved = (id: number) => savedIds.some((x) => Number(x) === Number(id));
 
   // Mở hồ sơ một photographer khác theo id (từ thẻ người bình luận)
   const openPhotographerById = (pid: number) => {
@@ -208,7 +234,7 @@ export default function App() {
   }
 
   // Screens that don't need real photographer data can render immediately.
-  const needsData = !["login", "profile", "personal-info", "privacy", "become-photographer", "contact-us", "notifications", "change-email", "change-password", "admin-review"].includes(screen);
+  const needsData = !["login", "profile", "personal-info", "privacy", "become-photographer", "contact-us", "notifications", "change-email", "change-password", "admin-review", "messages", "chat"].includes(screen);
 
   if (needsData && loading) {
     return (
@@ -251,9 +277,9 @@ export default function App() {
           {screen === "reviews-list" && activePhotographer && <ReviewsListScreen photographer={activePhotographer} setScreen={navigateTo} />}
           {screen === "booking" && activePhotographer && <BookingScreen photographer={activePhotographer} setScreen={navigateTo} />}
           {screen === "booking-confirm" && activePhotographer && <BookingConfirmScreen photographer={activePhotographer} setScreen={navigateTo} setTab={setTab} />}
-          {screen === "bookings" && <BookingsScreen setScreen={navigateTo} setPhotographer={setActivePhotographer} photographers={photographers} />}
-          {screen === "messages" && <MessagesScreen setScreen={navigateTo} setChatPartner={setChatPartner} photographers={photographers} />}
-          {screen === "chat" && chatPartner && <ChatScreen photographer={chatPartner} setScreen={navigateTo} />}
+          {screen === "bookings" && <BookingsScreen setScreen={navigateTo} setPhotographer={setActivePhotographer} photographers={photographers} onOpenChat={(t) => openChat(t, "bookings")} />}
+          {screen === "messages" && <MessagesScreen userId={session.user.id} onOpenChat={openChat} />}
+          {screen === "chat" && chatTarget && <ChatScreen key={chatTarget.id} target={chatTarget} userId={session.user.id} backTo={chatBack} setScreen={navigateTo} onRead={refreshUnread} />}
           {screen === "profile" && profile && (
             <ProfileScreen
               setScreen={navigateTo}
@@ -282,7 +308,15 @@ export default function App() {
           {screen === "admin-review" && <AdminReviewScreen setScreen={navigateTo} />}
           {screen === "edit-photographer" && <EditPhotographerProfileScreen setScreen={navigateTo} onSaved={handleProfileSaved} />}
 
-          {showNav && <BottomNav tab={tab} setTab={setTab} setScreen={navigateTo} />}
+          {showNav && <BottomNav tab={tab} setTab={setTab} setScreen={navigateTo} unread={unread} />}
+
+          {chatToast && screen !== "messages" && (
+            <ChatToast
+              toast={chatToast}
+              onOpen={() => { openChat(chatToast.target, "messages"); setTab("messages"); dismissToast(); }}
+              onClose={dismissToast}
+            />
+          )}
         </div>
       </div>
     </div>

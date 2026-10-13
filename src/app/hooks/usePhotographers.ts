@@ -22,6 +22,7 @@ function normalizePhotographer(row: any): Photographer {
 
   return {
     ...row,
+    id: Number(row.id),
     portfolio,
     boards,
     standalone_pins: standalone_pins.length > 0 ? standalone_pins : portfolio,
@@ -101,6 +102,28 @@ export function usePhotographers() {
         }
       } catch (e) {
         console.warn("[usePhotographers] merge applications", e);
+      }
+
+      // Số liệu thật: dùng CÙNG nguồn (RPC) với trang hồ sơ để thẻ ngoài và hồ sơ luôn khớp
+      try {
+        const { data: stats, error: statsErr } = await supabase.rpc("get_photographers_stats");
+        if (statsErr) throw statsErr;
+        if (Array.isArray(stats) && stats.length) {
+          const byId = new Map<number, any>(stats.map((s: any) => [Number(s.photographer_id), s]));
+          list = list.map((p) => {
+            const s = byId.get(p.id);
+            if (!s) return p;
+            return {
+              ...p,
+              rating: Number(s.rating) || 0,
+              review_count: Number(s.review_count) || 0,
+              bookings: Number(s.completed_deals) || 0,
+              hearts: Number(s.hearts) || 0,
+            };
+          });
+        }
+      } catch (e) {
+        console.warn("[usePhotographers] get_photographers_stats (đã chạy SQL 031 chưa?)", e);
       }
 
       if (!cancelled) {

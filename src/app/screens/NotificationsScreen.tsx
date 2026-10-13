@@ -3,21 +3,37 @@ import type { Screen } from "../types";
 import { TEAL, BG } from "../constants";
 import { Toggle } from "../components/shared/Toggle";
 import { useState } from "react";
+import {
+  askBrowserNotifPermission,
+  browserNotifState,
+  loadNotifPrefs,
+  saveNotifPrefs,
+  type NotifPrefs,
+} from "../lib/notifPrefs";
 
 type ReminderKey = "dayBefore" | "hours4" | "hours24";
 
 export default function NotificationsScreen({ setScreen }: { setScreen: (s: Screen) => void }) {
-  const [master, setMaster] = useState(true);
-  const [orderAccepted, setOrderAccepted] = useState(true);
-  const [newMessage, setNewMessage] = useState(true);
-  const [reminderOn, setReminderOn] = useState(true);
-  const [reminders, setReminders] = useState<Record<ReminderKey, boolean>>({
-    dayBefore: true,
-    hours4: true,
-    hours24: true,
-  });
+  // Cài đặt được lưu trên thiết bị: vào lại màn này (hoặc mở lại app) vẫn giữ nguyên
+  const [prefs, setPrefs] = useState<NotifPrefs>(loadNotifPrefs);
+  const [permState, setPermState] = useState(browserNotifState);
 
-  const toggleReminder = (key: ReminderKey) => setReminders(p => ({ ...p, [key]: !p[key] }));
+  const update = (patch: Partial<NotifPrefs>) => {
+    const next = { ...prefs, ...patch };
+    setPrefs(next);
+    saveNotifPrefs(next);
+  };
+
+  const toggleReminder = (key: ReminderKey) =>
+    update({ reminders: { ...prefs.reminders, [key]: !prefs.reminders[key] } });
+
+  // Bật thông báo tin nhắn → xin quyền thông báo của trình duyệt (chỉ khi người dùng chủ động bật)
+  const turnOnWithPermission = async () => {
+    await askBrowserNotifPermission();
+    setPermState(browserNotifState());
+  };
+
+  const { master, orderAccepted, newMessage, reminderOn, reminders } = prefs;
 
   return (
     <div className="flex flex-col min-h-screen pb-10" style={{ background: BG }}>
@@ -36,7 +52,13 @@ export default function NotificationsScreen({ setScreen }: { setScreen: (s: Scre
               <p className="text-sm font-bold">Thông báo</p>
               <p className="text-xs text-muted-foreground">Bật/tắt toàn bộ thông báo của ứng dụng</p>
             </div>
-            <Toggle on={master} onToggle={() => setMaster(!master)} />
+            <Toggle
+              on={master}
+              onToggle={() => {
+                update({ master: !master });
+                if (!master && newMessage) void turnOnWithPermission();
+              }}
+            />
           </div>
         </div>
 
@@ -47,15 +69,26 @@ export default function NotificationsScreen({ setScreen }: { setScreen: (s: Scre
                 <p className="text-sm font-semibold">Photographer nhận lịch</p>
                 <p className="text-xs text-muted-foreground">Khi photographer đồng ý nhận lịch chụp của bạn</p>
               </div>
-              <Toggle on={master && orderAccepted} onToggle={() => setOrderAccepted(!orderAccepted)} />
+              <Toggle on={master && orderAccepted} onToggle={() => update({ orderAccepted: !orderAccepted })} />
             </div>
 
             <div className="flex items-center gap-3 px-4 py-3.5 border-b border-border">
               <div className="flex-1">
                 <p className="text-sm font-semibold">Tin nhắn mới</p>
                 <p className="text-xs text-muted-foreground">Khi có người nhắn tin cho bạn</p>
+                {master && newMessage && permState === "denied" && (
+                  <p className="text-[11px] text-amber-600 mt-1 leading-relaxed">
+                    Trình duyệt đang chặn thông báo. Bạn vẫn thấy banner khi đang mở app.
+                  </p>
+                )}
               </div>
-              <Toggle on={master && newMessage} onToggle={() => setNewMessage(!newMessage)} />
+              <Toggle
+                on={master && newMessage}
+                onToggle={() => {
+                  update({ newMessage: !newMessage });
+                  if (!newMessage) void turnOnWithPermission();
+                }}
+              />
             </div>
 
             <div className="flex items-center gap-3 px-4 py-3.5 border-b border-border">
@@ -63,7 +96,7 @@ export default function NotificationsScreen({ setScreen }: { setScreen: (s: Scre
                 <p className="text-sm font-semibold">Sắp tới giờ hẹn</p>
                 <p className="text-xs text-muted-foreground">Nhắc trước khi tới buổi chụp đã đặt lịch</p>
               </div>
-              <Toggle on={master && reminderOn} onToggle={() => setReminderOn(!reminderOn)} />
+              <Toggle on={master && reminderOn} onToggle={() => update({ reminderOn: !reminderOn })} />
             </div>
 
             {/* Sub-options của "Sắp tới giờ hẹn" */}

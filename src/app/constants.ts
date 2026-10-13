@@ -57,7 +57,8 @@ export const styles: StyleCategory[] = [
   },
   {
     label: "Giới Trẻ & Văn Hoá", icon: Users2,
-    subcategories: ["Concert/Live Music", "Sports Events", "Yearbook", "Festival anime/cosplay"],
+    // Ngắn trước → dài sau: xếp kín hàng, tránh 1 chip lẻ + khoảng trống lớn bên phải
+    subcategories: ["Yearbook", "Sports Events", "Concert/Live Music", "Festival anime/cosplay"],
   },
 ];
 

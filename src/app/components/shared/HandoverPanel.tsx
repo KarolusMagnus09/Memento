@@ -247,6 +247,10 @@ function ClientPanel({ booking, userId, accent, onChanged, notify }: Props) {
   }
 
   async function approve() {
+    if (!booking.drive_url) {
+      notify("Photographer chưa gửi link Drive. Không thể hoàn tất khi chưa có file ảnh demo.");
+      return;
+    }
     if (
       unresolved > 0 &&
       !confirm(`Còn ${unresolved} yêu cầu chưa được photographer đánh dấu "đã chỉnh". Bạn vẫn muốn hoàn tất lịch hẹn?`)
