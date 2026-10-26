@@ -15,7 +15,8 @@ import { ReportFlow, ReportIcon } from "../components/shared/ReportFlow";
 import { EMPTY_SUMMARY, fetchReviewSummary, submitProfileReport, fetchPhotoLikes, togglePhotoLike, type ReviewSummary } from "../lib/social";
 import { useProgressiveList } from "../hooks/useProgressiveList";
 import { useState, useEffect, useRef, useCallback } from "react";
-import { uniqueStyleLabels } from "../lib/photographerDisplay";
+import { uniqueStyleLabels, getLocations } from "../lib/photographerDisplay";
+import { BOOKING_STATUS_VI, fetchPtgDeleteBlockers, type PtgDeleteBlockers } from "../lib/ptgDelete";
 
 const ALL_PINS_ID = "__all__";
 const STANDALONE_ID = "__standalone__";
@@ -135,6 +136,18 @@ export default function PhotographerProfileScreen({
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Đơn đang làm / đề nghị đang chờ → chặn xóa hồ sơ
+  const [blockers, setBlockers] = useState<PtgDeleteBlockers | null>(null);
+  const [blockersLoading, setBlockersLoading] = useState(false);
+  const hasBlockers = !!blockers && (blockers.bookings.length > 0 || blockers.offers.length > 0);
+
+  useEffect(() => {
+    if (!showDeleteModal) { setBlockers(null); return; }
+    let alive = true;
+    setBlockersLoading(true);
+    fetchPtgDeleteBlockers().then((b) => { if (alive) { setBlockers(b); setBlockersLoading(false); } });
+    return () => { alive = false; };
+  }, [showDeleteModal]);
 
   useEffect(() => {
     if (!showDeleteModal) {
@@ -165,6 +178,13 @@ export default function PhotographerProfileScreen({
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Chưa đăng nhập.");
+
+      // Kiểm tra lại ngay trước khi xóa (server cũng chặn bằng trigger)
+      const fresh = await fetchPtgDeleteBlockers();
+      if (fresh && (fresh.bookings.length > 0 || fresh.offers.length > 0)) {
+        setBlockers(fresh);
+        return;
+      }
 
       // .select() sau delete để biết có xóa được dòng nào không
       // (RLS chặn delete thường trả error=null + data=[])
@@ -429,7 +449,7 @@ export default function PhotographerProfileScreen({
           <h2 className="font-black text-xl" style={{ color: TEAL }}>{ptg.name}</h2>
           <div className="flex items-center gap-1 mt-0.5">
             <MapPin size={12} className="text-muted-foreground" />
-            <span className="text-xs text-muted-foreground">{ptg.location}</span>
+            <span className="text-xs text-muted-foreground">{getLocations(ptg, 20).join(", ") || ptg.location}</span>
           </div>
           <div className="flex flex-wrap gap-1.5 mt-2">
             {uniqueStyleLabels(ptg).slice(0, 6).map(t => <Badge key={t} text={t} color="teal" />)}
@@ -669,16 +689,25 @@ export default function PhotographerProfileScreen({
                         <p className="text-xs text-muted-foreground">{b.pins.length} ảnh</p>
                       </button>
                     ))}
-                    {ptg.standalone_pins.length > 0 && (
-                      <button type="button" onClick={() => setOpenBoardId(STANDALONE_ID)} className="text-left">
-                        <div className="aspect-square rounded-xl overflow-hidden">
-                          <BoardCoverCollage pins={ptg.standalone_pins} />
-                        </div>
-                        <p className="text-sm font-bold mt-1.5">Ảnh đăng lẻ</p>
-                        <p className="text-xs text-muted-foreground">{ptg.standalone_pins.length} ảnh</p>
-                      </button>
-                    )}
                   </div>
+
+                  {/* Ảnh đăng lẻ: liệt kê từng ảnh (masonry + tim) ngay dưới bộ sưu tập, không gói thành 1 board */}
+                  {ptg.standalone_pins.length > 0 && (
+                    <div className="mt-5">
+                      <div className="flex items-center justify-between mb-2">
+                        <h4 className="font-bold" style={{ color: TEAL }}>Ảnh đăng lẻ</h4>
+                        <span className="text-xs text-muted-foreground">{ptg.standalone_pins.length} ảnh</span>
+                      </div>
+                      <InfiniteMasonryBox
+                        pins={ptg.standalone_pins}
+                        resetKey={`standalone-${ptg.standalone_pins.length}`}
+                        onPinClick={setLightboxSrc}
+                        likes={likes}
+                        onToggleLike={toggleLike}
+                        likeDisabled={isOwner}
+                      />
+                    </div>
+                  )}
                 </>
               ) : ptg.standalone_pins.length > 0 ? (
                 /* Chỉ ảnh đăng lẻ: hiện masonry cuộn trong khung, không gói thành 1 board */
@@ -1027,7 +1056,7 @@ export default function PhotographerProfileScreen({
       {/* Modal xóa hồ sơ PTG — đợi 5s rồi mới bấm Đồng ý */}
       {showDeleteModal && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center px-6"
+          className="fixed inset-0 z-[130] flex items-center justify-center px-6"
           style={{ background: "rgba(0,0,0,0.45)" }}
           onClick={() => !deleting && setShowDeleteModal(false)}
         >
@@ -1035,6 +1064,66 @@ export default function PhotographerProfileScreen({
             className="w-full max-w-xs bg-white rounded-3xl p-5 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
+            {blockersLoading ? (
+              <p className="text-sm text-muted-foreground text-center py-8">Đang kiểm tra đơn của bạn…</p>
+            ) : hasBlockers && blockers ? (
+              <div className="max-h-[75dvh] overflow-y-auto no-scrollbar">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-9 h-9 rounded-full bg-amber-100 flex items-center justify-center text-lg">⚠️</div>
+                  <h3 className="text-base font-black" style={{ color: "#b45309" }}>Chưa thể xóa hồ sơ</h3>
+                </div>
+                <p className="text-sm text-muted-foreground mb-3 leading-relaxed">
+                  Bạn cần <strong>hoàn thành xong hết đơn đang làm</strong> và <strong>rút các đề nghị nhận đơn</strong> thì mới được xóa hồ sơ nhiếp ảnh gia.
+                </p>
+
+                {blockers.bookings.length > 0 && (
+                  <div className="mb-3">
+                    <p className="text-xs font-bold mb-1.5" style={{ color: TEAL }}>Đơn đang làm ({blockers.bookings.length})</p>
+                    <ul className="flex flex-col gap-1.5">
+                      {blockers.bookings.map((b) => (
+                        <li key={b.id} className="rounded-xl bg-muted px-3 py-2 text-xs">
+                          <p className="font-bold truncate">{b.name || "Đơn chụp"}{b.source === "request" ? " · 📢 đăng bài" : ""}</p>
+                          <p className="text-muted-foreground truncate">
+                            {[b.client, b.date].filter(Boolean).join(" · ")} · {BOOKING_STATUS_VI[b.status] ?? b.status}
+                          </p>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {blockers.offers.length > 0 && (
+                  <div className="mb-3">
+                    <p className="text-xs font-bold mb-1.5" style={{ color: TEAL }}>Đề nghị đang chờ khách chọn ({blockers.offers.length})</p>
+                    <ul className="flex flex-col gap-1.5">
+                      {blockers.offers.map((o) => (
+                        <li key={o.offer_id} className="rounded-xl bg-muted px-3 py-2 text-xs">
+                          <p className="font-bold truncate">{o.title || "Đơn tìm nhiếp ảnh gia"}</p>
+                          <p className="text-muted-foreground truncate">
+                            {o.requester ? `${o.requester} · ` : ""}Bạn đề nghị {o.price.toLocaleString("vi-VN")}đ
+                          </p>
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="text-[11px] text-muted-foreground mt-1.5">Vào Quản lý đơn → Bình luận của tôi → Chỉnh sửa → Rút để rút đề nghị.</p>
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-2">
+                  {blockers.bookings.length > 0 && (
+                    <button type="button" onClick={() => { setShowDeleteModal(false); setScreen("bookings"); }}
+                      className="w-full py-3 rounded-2xl font-bold text-sm text-white" style={{ background: TEAL }}>Xem lịch hẹn</button>
+                  )}
+                  {blockers.offers.length > 0 && (
+                    <button type="button" onClick={() => { setShowDeleteModal(false); setScreen("my-requests"); }}
+                      className="w-full py-3 rounded-2xl font-bold text-sm text-white" style={{ background: TEAL }}>Xem đề nghị của tôi</button>
+                  )}
+                  <button type="button" onClick={() => setShowDeleteModal(false)}
+                    className="w-full py-3 rounded-2xl border-2 font-bold text-sm bg-white" style={{ borderColor: "#e5e7eb", color: TEAL }}>Đóng</button>
+                </div>
+              </div>
+            ) : (
+            <>
             <div className="flex items-center gap-2 mb-2">
               <div className="w-9 h-9 rounded-full bg-red-100 flex items-center justify-center">
                 <Trash2 size={18} className="text-red-600" />
@@ -1077,6 +1166,8 @@ export default function PhotographerProfileScreen({
                 Hủy
               </button>
             </div>
+            </>
+            )}
           </div>
         </div>
       )}

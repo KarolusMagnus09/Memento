@@ -1,12 +1,22 @@
 import { useBackHandler } from "../lib/backNavigation";
 import { ChevronLeft, ChevronDown, CheckCircle, Plus, BookOpen, MapPin, X, Edit3, IdCard, ScanLine, AlertCircle } from "lucide-react";
 import { Avatar } from "../components/shared/Avatar";
+import { AvatarCropper } from "../components/shared/AvatarCropper";
+import { BirthDateInput, MIN_AGE, isOldEnough } from "../components/shared/BirthDateInput";
 import type { Screen } from "../types";
 import type { Profile } from "../hooks/useProfile";
 import { TEAL, TEAL_MID, TEAL_LIGHT, BG, VN_PROVINCES, styles, VN_BANKS } from "../constants";
 import { ImageLightbox } from "../components/shared/ImageLightbox";
 import { BoardCoverCollage } from "../components/shared/BoardCoverCollage";
 import { supabase } from "../lib/supabase";
+import { GroupCountBadge } from "../components/shared/GroupCountBadge";
+import {
+  SERVICE_CATEGORIES,
+  categoryDef,
+  isRentalCategory,
+  normalizeCategory,
+  type ServiceCategory,
+} from "../lib/serviceCategories";
 import { uploadImageIfLocal, uploadImagesIfLocal } from "../lib/uploadFile";
 import { notifySupportNewApplication } from "../lib/notifySupport";
 import { useState, useRef, useEffect } from "react";
@@ -86,25 +96,28 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
 
   // ── STEP 2 — Bảng giá dạng nhóm (category bắt buộc + list con) ───────────
   // category giúp lọc / hiện tab "Thuê & phụ kiện" trên hồ sơ công khai
-  type PriceCategory = "photo" | "makeup" | "editor" | "rental";
+  // "others" = dịch vụ tự đặt (nút "Thêm bảng giá"), không thuộc thể loại nào; lưu trên server đúng chữ "others" để sau này lọc
+  type PriceCategory = ServiceCategory;
   type PriceLine = { id: string; name: string; price: string; detail: string };
   type PriceGroup = { id: string; title: string; category: PriceCategory; lines: PriceLine[] };
-  const PRICE_CATEGORIES: { value: PriceCategory; label: string; hint: string }[] = [
-    { value: "photo", label: "Chụp ảnh", hint: "Gói chụp, session, album..." },
-    { value: "makeup", label: "Make Up", hint: "Trang điểm, bôi trắng..." },
-    { value: "editor", label: "Editor", hint: "Retouch, chỉnh sửa ảnh..." },
-    { value: "rental", label: "Thuê & phụ kiện", hint: "Studio, đèn, máy, đạo cụ..." },
-  ];
-  const categoryLabel = (c: PriceCategory) => PRICE_CATEGORIES.find(x => x.value === c)?.label ?? c;
+  const PRICE_CATEGORIES = SERVICE_CATEGORIES;
+  const categoryLabel = (c: PriceCategory) => (c === "others" ? "Khác (tự đặt)" : categoryDef(c).label);
 
   const [priceGroups, setPriceGroups] = useState<PriceGroup[]>([]);
   const [showGroupForm, setShowGroupForm] = useState(false);
+  /** Tăng mỗi lần tạo nhóm giá mới → hiện chấm đỏ đếm số nhóm */
+  const [groupPulse, setGroupPulse] = useState(0);
   const [newGroupTitle, setNewGroupTitle] = useState("");
   const [newGroupCategory, setNewGroupCategory] = useState<PriceCategory | null>(null);
   const [addingLineToGroupId, setAddingLineToGroupId] = useState<string | null>(null);
   const [newLineName, setNewLineName] = useState("");
   const [newLinePrice, setNewLinePrice] = useState("");
   const [newLineDetail, setNewLineDetail] = useState("");
+  // "Thêm bảng giá": dịch vụ tự đặt tên + giá, lưu vào nhóm category "others"
+  const [showOtherForm, setShowOtherForm] = useState(false);
+  const [otherName, setOtherName] = useState("");
+  const [otherPrice, setOtherPrice] = useState("");
+  const [otherDetail, setOtherDetail] = useState("");
 
   // Link minh chứng — giọng khuyến khích kiểu PotoNow
   const [proofLink, setProofLink] = useState("");
@@ -139,7 +152,8 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
   function getStep1Missing(): string[] {
     const missing: string[] = [];
     if (!fullName.trim()) missing.push("fullName");
-    if (!birthDate) missing.push("birthDate");
+    // Chưa nhập, ngày không có thật, hoặc chưa đủ tuổi tối thiểu → chặn không cho sang bước sau
+    if (!birthDate || !isOldEnough(birthDate, MIN_AGE)) missing.push("birthDate");
     if (!phone.trim()) missing.push("phone");
     if (!cccdFront || !cccdBack) missing.push("cccd");
     if (!bankCode || !bankAccount.trim()) missing.push("bank");
@@ -173,13 +187,33 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
     const title = newGroupTitle.trim();
     if (!title || !newGroupCategory) return;
     // Thuê & phụ kiện chỉ cho phép khi đã tick skill phụ tương ứng
-    if (newGroupCategory === "rental" && !skillRental) return;
+    if (isRentalCategory(newGroupCategory) && !skillRental) return;
     const id = `grp-${Date.now()}`;
     setPriceGroups(prev => [...prev, { id, title, category: newGroupCategory, lines: [] }]);
     setNewGroupTitle("");
     setNewGroupCategory(null);
     setShowGroupForm(false);
     setAddingLineToGroupId(id);
+    setGroupPulse(n => n + 1);
+    clearFieldError("priceGroups");
+  }
+
+  function addOtherPrice() {
+    const name = otherName.trim();
+    const priceDigits = otherPrice.replace(/\D/g, "");
+    if (!name || !priceDigits) return;
+    const line: PriceLine = { id: `ln-${Date.now()}`, name, price: priceDigits, detail: otherDetail.trim() };
+    setPriceGroups(prev => {
+      const idx = prev.findIndex(g => g.category === "others");
+      if (idx === -1) {
+        return [...prev, { id: `grp-others-${Date.now()}`, title: "Dịch vụ khác", category: "others", lines: [line] }];
+      }
+      return prev.map((g, i) => (i === idx ? { ...g, lines: [...g.lines, line] } : g));
+    });
+    setOtherName("");
+    setOtherPrice("");
+    setOtherDetail("");
+    setShowOtherForm(false);
     clearFieldError("priceGroups");
   }
 
@@ -212,7 +246,7 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
   const hasCat = (c: PriceCategory) => priceGroups.some(g => g.category === c && g.lines.length > 0);
   const needsMakeupPrice = skillMakeup && !hasCat("makeup");
   const needsEditPrice = skillEdit && !hasCat("editor");
-  const needsRentalPrice = skillRental && !hasCat("rental");
+  const needsRentalPrice = skillRental && !hasCat("rental_studio") && !hasCat("rental_outfit");
 
   function handleNextClick() {
     const missing = step === 1 ? getStep1Missing() : step === 2 ? getStep2Missing() : [];
@@ -261,6 +295,8 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
   // Ảnh đại diện DÙNG CHUNG với hồ sơ khách hàng (profile.avatar_url) — đổi
   // ở đây sẽ lưu thẳng vào profile, y hệt cách "Họ và tên" ở Step 1 hoạt động.
   const [avatarUrl, setAvatarUrl] = useState(profile.avatar_url ?? "");
+  // Ảnh đại diện vừa chọn, đang chờ cắt (null = không mở khung cắt)
+  const [avatarCropSrc, setAvatarCropSrc] = useState<string | null>(null);
   const [boards, setBoards] = useState<Board[]>([]);
   const [standalonePins, setStandalonePins] = useState<string[]>([]);
   const [showCreateBoard, setShowCreateBoard] = useState(false);
@@ -396,7 +432,11 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
       setSkillRental(!!data.skill_rental);
       setSelectedStyles(arr<string>(data.selected_styles));
       setPriceGroups(
-        arr<PriceGroup>(data.price_groups).map(g => ({ ...g, lines: Array.isArray(g.lines) ? g.lines : [] }))
+        arr<PriceGroup>(data.price_groups).map(g => ({
+          ...g,
+          category: normalizeCategory(g.category), // "rental" cũ → "Thuê studio"
+          lines: Array.isArray(g.lines) ? g.lines : [],
+        }))
       );
       setProofLink(str(data.proof_link));
       setBannerUrl(str(data.banner_url));
@@ -431,6 +471,7 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
     setSubmitError(null);
     try {
       if (!profile?.id) throw new Error("Chưa đăng nhập. Vui lòng đăng nhập lại rồi gửi hồ sơ.");
+      if (!isOldEnough(birthDate, MIN_AGE)) throw new Error(`Bạn cần đủ ${MIN_AGE} tuổi để đăng ký làm nhiếp ảnh gia.`);
 
       const bucket = "photographer-applications";
       const base = profile.id;
@@ -674,11 +715,12 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
 
               <div className="mb-3" ref={setFieldRef("birthDate")}>
                 <p className="text-xs font-semibold text-muted-foreground mb-1">Ngày sinh *</p>
-                <input type="date" value={birthDate} onChange={e => { setBirthDate(e.target.value); clearFieldError("birthDate"); }}
-                  className="w-full px-3 py-2.5 rounded-xl bg-muted text-sm outline-none"
-                  style={errorFields.has("birthDate") ? { boxShadow: "0 0 0 1.5px #dc2626" } : undefined} />
-                <p className="text-[11px] text-muted-foreground mt-1">Bạn phải đủ 16 tuổi để đăng ký.</p>
-                <FieldError show={errorFields.has("birthDate")} />
+                <BirthDateInput
+                  value={birthDate}
+                  onChange={v => { setBirthDate(v); clearFieldError("birthDate"); }}
+                  invalid={errorFields.has("birthDate")}
+                />
+                {errorFields.has("birthDate") && !birthDate && <FieldError show />}
               </div>
 
               <div className="mb-3" ref={setFieldRef("phone")}>
@@ -759,7 +801,7 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
                   onChange={e => { setBankAccountName(e.target.value); clearFieldError("bank"); }}
                   className="w-full px-3 py-2.5 rounded-xl bg-muted text-sm outline-none"
                   style={errorFields.has("bank") && !bankAccountName.trim() ? { boxShadow: "0 0 0 1.5px #dc2626" } : undefined}
-                  placeholder="HOANG VU DAT (in hoa, không dấu càng tốt)"
+                  placeholder="NGUYEN VAN A (in hoa, không dấu càng tốt)"
                 />
                 <FieldError show={errorFields.has("bank")} />
               </div>
@@ -891,7 +933,7 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
               <p className="font-bold mb-1" style={{ color: TEAL }}>Skill phụ đi kèm</p>
               <p className="text-xs text-muted-foreground mb-3">
                 Bạn có thể tích nếu có kỹ năng hỗ trợ thêm cho buổi chụp (không bắt buộc).
-                Tick <strong>Thuê &amp; phụ kiện</strong> nếu bạn cho thuê studio / máy / đèn / đạo cụ — sẽ mở category bảng giá và tab riêng trên hồ sơ.
+                Tick <strong>Cho thuê</strong> nếu bạn cho thuê studio hoặc quần áo / phụ kiện — sẽ mở các thể loại <strong>Thuê studio</strong>, <strong>Thuê quần áo</strong> trong bảng giá và tab riêng trên hồ sơ.
               </p>
               <div className="flex flex-col gap-2.5">
                 {[
@@ -899,13 +941,13 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
                   { key: "edit" as const, label: "Chỉnh sửa ảnh (Edit / Retouch)", checked: skillEdit, toggle: () => setSkillEdit(v => !v) },
                   {
                     key: "rental" as const,
-                    label: "Thuê & phụ kiện (Studio / Máy / Đạo cụ)",
+                    label: "Cho thuê (Studio / Quần áo / Phụ kiện)",
                     checked: skillRental,
                     toggle: () => {
                       setSkillRental(prev => {
                         const next = !prev;
                         // Bỏ tick → gỡ nhóm giá category rental
-                        if (!next) setPriceGroups(gs => gs.filter(g => g.category !== "rental"));
+                        if (!next) setPriceGroups(gs => gs.filter(g => !isRentalCategory(g.category)));
                         return next;
                       });
                     },
@@ -1033,11 +1075,13 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
               <FieldError show={errorFields.has("selectedStyles")} />
             </div>
 
+            <GroupCountBadge count={priceGroups.length} pulse={groupPulse} />
+
             {/* ── Bảng giá dạng nhóm + category bắt buộc ──────────────── */}
             <div className="bg-white rounded-2xl p-4 border border-border" ref={setFieldRef("priceGroups")}>
               <p className="font-bold mb-1" style={{ color: TEAL }}>Bảng giá *</p>
               <p className="text-xs text-muted-foreground mb-3">
-                Mỗi nhóm phải chọn <strong>thể loại</strong> (Chụp ảnh / Make Up / Editor / Thuê &amp; phụ kiện)
+                Mỗi nhóm phải chọn <strong>thể loại</strong> (Chụp ảnh / Make up / Edit-Retouch / Thuê studio / Thuê quần áo / Khác)
                 để dễ lọc trên hồ sơ. Tạo nhóm rồi thêm các mục con bên trong.
               </p>
 
@@ -1046,10 +1090,7 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
                   <div className="flex items-center justify-between mb-2 gap-2">
                     <div className="min-w-0">
                       <span className="inline-block text-[10px] font-black px-2 py-0.5 rounded-full mb-1"
-                        style={{
-                          background: g.category === "rental" ? "#fef3c7" : g.category === "makeup" ? "#fce7f3" : g.category === "editor" ? "#e0e7ff" : "#e8f5f0",
-                          color: g.category === "rental" ? "#b45309" : g.category === "makeup" ? "#be185d" : g.category === "editor" ? "#4338ca" : TEAL,
-                        }}>
+                        style={{ background: categoryDef(g.category).bg, color: categoryDef(g.category).fg }}>
                         {categoryLabel(g.category)}
                       </span>
                       <p className="text-sm font-black truncate" style={{ color: TEAL }}>{g.title}</p>
@@ -1111,7 +1152,7 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
                   <p className="text-xs font-bold mb-2" style={{ color: TEAL }}>Thể loại nhóm *</p>
                   <div className="grid grid-cols-2 gap-1.5 mb-3">
                     {PRICE_CATEGORIES
-                      .filter(c => c.value !== "rental" || skillRental)
+                      .filter(c => !isRentalCategory(c.value) || skillRental)
                       .map(c => {
                         const active = newGroupCategory === c.value;
                         return (
@@ -1129,14 +1170,16 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
                   </div>
                   {!skillRental && (
                     <p className="text-[10px] text-muted-foreground mb-2">
-                      Muốn thêm <strong>Thuê &amp; phụ kiện</strong>? Quay lại bước 1, tick skill phụ tương ứng.
+                      Muốn thêm <strong>Thuê studio / Thuê quần áo</strong>? Quay lại bước 1, tick "Cho thuê".
                     </p>
                   )}
                   <p className="text-xs font-bold mb-1.5" style={{ color: TEAL }}>Tên nhóm giá *</p>
                   <input value={newGroupTitle} onChange={e => setNewGroupTitle(e.target.value)}
                     className="w-full px-3 py-2 rounded-xl bg-muted text-sm outline-none mb-2"
                     placeholder={
-                      newGroupCategory === "rental" ? "Ví dụ: Thuê studio, Thuê máy..."
+                      newGroupCategory === "rental_studio" ? "Ví dụ: Studio backroom, Thuê phông nền..."
+                        : newGroupCategory === "rental_outfit" ? "Ví dụ: Váy cưới, Áo dài, Vest..."
+                        : newGroupCategory === "others" ? "Ví dụ: In ảnh, Khung ảnh..."
                         : newGroupCategory === "makeup" ? "Ví dụ: Make Up cô dâu..."
                           : newGroupCategory === "editor" ? "Ví dụ: Retouch cơ bản..."
                             : "Ví dụ: Gói Indoor, Outdoor..."
@@ -1158,6 +1201,41 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
                 </button>
               )}
 
+              {/* ── Thêm bảng giá: dịch vụ tự đặt, không thuộc thể loại nào (server ghi category = "others") ── */}
+              <div className="mt-3 pt-3 border-t border-border">
+                <p className="text-xs font-bold mb-0.5" style={{ color: TEAL }}>Thêm bảng giá</p>
+                <p className="text-[11px] text-muted-foreground mb-2 leading-relaxed">
+                  Dịch vụ riêng của bạn: tự đặt tên và giá, không cần chọn thể loại ở trên. Hệ thống sẽ xếp vào mục <strong>Khác</strong>.
+                </p>
+                {showOtherForm ? (
+                  <div className="p-3 rounded-xl border-2" style={{ borderColor: TEAL_LIGHT }}>
+                    <input value={otherName} onChange={e => setOtherName(e.target.value.slice(0, 80))}
+                      className="w-full px-3 py-2 rounded-xl bg-muted text-sm outline-none mb-2"
+                      placeholder="Tên dịch vụ (vd: Chụp ảnh thú cưng)" autoFocus />
+                    <input value={formatVnd(otherPrice)} onChange={e => setOtherPrice(e.target.value.replace(/\D/g, ""))}
+                      inputMode="numeric"
+                      className="w-full px-3 py-2 rounded-xl bg-muted text-sm outline-none mb-2"
+                      placeholder="Giá VND" />
+                    <input value={otherDetail} onChange={e => setOtherDetail(e.target.value.slice(0, 120))}
+                      className="w-full px-3 py-2 rounded-xl bg-muted text-sm outline-none mb-3"
+                      placeholder="Chi tiết (tuỳ chọn)" />
+                    <div className="flex gap-2">
+                      <button type="button" onClick={addOtherPrice}
+                        disabled={!otherName.trim() || !otherPrice.replace(/\D/g, "")}
+                        className="flex-1 py-2 rounded-xl text-xs font-bold text-white disabled:opacity-40" style={{ background: TEAL }}>Thêm</button>
+                      <button type="button" onClick={() => { setShowOtherForm(false); setOtherName(""); setOtherPrice(""); setOtherDetail(""); }}
+                        className="flex-1 py-2 rounded-xl text-xs font-bold border-2" style={{ borderColor: TEAL, color: TEAL }}>Hủy</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button type="button" onClick={() => setShowOtherForm(true)}
+                    className="w-full py-2.5 rounded-xl text-xs font-bold border-2 border-dashed flex items-center justify-center gap-1.5"
+                    style={{ borderColor: TEAL_LIGHT, color: TEAL }}>
+                    <Plus size={14} /> Thêm bảng giá
+                  </button>
+                )}
+              </div>
+
               <FieldError show={errorFields.has("priceGroups")} />
 
               {(needsMakeupPrice || needsEditPrice || needsRentalPrice) && (
@@ -1172,8 +1250,8 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
                   )}
                   {needsRentalPrice && (
                     <p className={(needsMakeupPrice || needsEditPrice) ? "mt-1" : ""}>
-                      • Đã tick <strong>Thuê &amp; phụ kiện</strong> — nên tạo nhóm thể loại <strong>Thuê &amp; phụ kiện</strong>
-                      (studio, máy, đèn, đạo cụ). Tab này sẽ hiện riêng trên hồ sơ.
+                      • Đã tick <strong>Cho thuê</strong> — nên tạo nhóm thể loại <strong>Thuê studio</strong> hoặc <strong>Thuê quần áo</strong>.
+                      Tab này sẽ hiện riêng trên hồ sơ.
                     </p>
                   )}
                 </div>
@@ -1232,7 +1310,7 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
                     <p className="font-bold text-sm" style={{ color: TEAL }}>Ảnh đại diện</p>
                     <p className="text-xs text-muted-foreground">Dùng chung với hồ sơ cá nhân của bạn</p>
                   </div>
-                  <button onClick={() => pickImageFile(false, false, urls => persistAvatar(urls[0]))}
+                  <button onClick={() => pickImageFile(false, false, urls => setAvatarCropSrc(urls[0]))}
                     className="text-xs font-bold px-3 py-2 rounded-xl border-2" style={{ borderColor: TEAL, color: TEAL }}>
                     Đổi ảnh
                   </button>
@@ -1446,7 +1524,7 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
                     <div className="absolute -bottom-8 left-4">
                       <div className="relative">
                         <Avatar src={avatarUrl} size={64} className="border-4 border-white shadow-lg" />
-                        <button onClick={() => pickImageFile(false, false, urls => persistAvatar(urls[0]))}
+                        <button onClick={() => pickImageFile(false, false, urls => setAvatarCropSrc(urls[0]))}
                           className="absolute -bottom-0.5 -right-0.5 w-6 h-6 rounded-full bg-white shadow flex items-center justify-center">
                           <Edit3 size={11} style={{ color: TEAL }} />
                         </button>
@@ -1625,10 +1703,10 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
 
                     {previewTab === "pricing" && (
                       <div className="mt-3 flex flex-col gap-2">
-                        {priceGroups.filter(g => g.category !== "rental").length === 0 ? (
+                        {priceGroups.filter(g => !isRentalCategory(g.category)).length === 0 ? (
                           <p className="text-xs text-center text-muted-foreground py-4">Chưa có bảng giá chụp / makeup / editor</p>
                         ) : (
-                          priceGroups.filter(g => g.category !== "rental").map(g => (
+                          priceGroups.filter(g => !isRentalCategory(g.category)).map(g => (
                             <div key={g.id} className="rounded-xl border border-border p-3">
                               <p className="text-[10px] font-black mb-1 opacity-70">[{categoryLabel(g.category)}] {g.title}</p>
                               {g.lines.map(line => (
@@ -1645,9 +1723,9 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
 
                     {previewTab === "rental" && (
                       <div className="mt-3 flex flex-col gap-2">
-                        {priceGroups.filter(g => g.category === "rental").map(g => (
+                        {priceGroups.filter(g => isRentalCategory(g.category)).map(g => (
                           <div key={g.id} className="rounded-xl border p-3" style={{ borderColor: "#fde68a" }}>
-                            <p className="text-[10px] font-black mb-1" style={{ color: "#b45309" }}>[Thuê & phụ kiện] {g.title}</p>
+                            <p className="text-[10px] font-black mb-1" style={{ color: "#b45309" }}>[{categoryLabel(g.category)}] {g.title}</p>
                             {g.lines.map(line => (
                               <div key={line.id} className="flex justify-between gap-2 text-xs py-0.5">
                                 <span className="text-muted-foreground truncate">{line.name}</span>
@@ -1691,7 +1769,7 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
                           </div>
                           )
                         )}
-                        {priceGroups.filter(g => g.category === "rental").length === 0 && rentalBoards.length === 0 && rentalPins.length === 0 && (
+                        {priceGroups.filter(g => isRentalCategory(g.category)).length === 0 && rentalBoards.length === 0 && rentalPins.length === 0 && (
                           <p className="text-xs text-center text-muted-foreground py-4">Chưa có mục thuê &amp; phụ kiện</p>
                         )}
                       </div>
@@ -2018,6 +2096,15 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
 
       {lightboxSrc && (
         <ImageLightbox src={lightboxSrc} liked={false} likeCount={0} onToggleLike={() => {}} onClose={() => setLightboxSrc(null)} showLike={false} />
+      )}
+
+      {avatarCropSrc && (
+        <AvatarCropper
+          src={avatarCropSrc}
+          onCancel={() => setAvatarCropSrc(null)}
+          // Giữ blob URL như trước (uploadImageIfLocal sẽ upload lúc gửi hồ sơ)
+          onConfirm={(_dataUrl, blob) => { setAvatarCropSrc(null); persistAvatar(URL.createObjectURL(blob)); }}
+        />
       )}
     </div>
   );

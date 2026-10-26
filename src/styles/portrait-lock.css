@@ -1,0 +1,37 @@
+/*
+ * Chỉ hiển thị dọc (portrait).
+ * - Khóa thật: AndroidManifest / Info.plist / manifest.json (xem hướng dẫn) hoặc screen.orientation.lock (lib/portraitLock.ts).
+ * - Dự phòng khi không khóa được: điện thoại xoay ngang thì xoay ngược nội dung 90° để giao diện vẫn là khung dọc,
+ *   y như khi máy khóa xoay. Chỉ áp dụng cho thiết bị cảm ứng có chiều cao thấp (điện thoại), không đụng đến máy tính.
+ * html[data-rot] do lib/portraitLock.ts gắn: "ccw" = máy xoay ngược chiều kim đồng hồ, "cw" = xoay thuận chiều.
+ */
+@media (orientation: landscape) and (pointer: coarse) and (max-height: 600px) {
+  html[data-rot="ccw"],
+  html[data-rot="cw"] {
+    overflow: hidden;
+    height: 100%;
+  }
+
+  html[data-rot="ccw"] #root,
+  html[data-rot="cw"] #root {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vh;
+    height: 100vw;
+    width: 100dvh;
+    height: 100dvw;
+    overflow: hidden;
+    transform-origin: top left;
+  }
+
+  html[data-rot="ccw"] #root {
+    transform: translateY(100vh) rotate(-90deg);
+    transform: translateY(100dvh) rotate(-90deg);
+  }
+
+  html[data-rot="cw"] #root {
+    transform: translateX(100vw) rotate(90deg);
+    transform: translateX(100dvw) rotate(90deg);
+  }
+}

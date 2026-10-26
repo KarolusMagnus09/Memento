@@ -1,12 +1,15 @@
 import { useBackHandler } from "../../lib/backNavigation";
-import { useEffect, useMemo, useState } from "react";
-import { X, ChevronDown, Search } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { X, ChevronDown, Search, AlertCircle } from "lucide-react";
 import { TEAL, TEAL_LIGHT, VN_PROVINCES, styles } from "../../constants";
 import {
   EMPTY_FILTER,
   type PhotographerFilter,
   countActiveFilters,
 } from "../../lib/photographerFilter";
+import { EXTRA_SERVICES, type ExtraServiceKey } from "../../lib/serviceCategories";
+import { PriceInput, BAD_CHAR_MSG } from "./PriceInput";
+
 
 const SORT_OPTIONS: { id: NonNullable<PhotographerFilter["sort"]>; label: string }[] = [
   { id: "most_shoots", label: "Số lần chụp nhiều nhất" },
@@ -37,6 +40,17 @@ export function PhotographerFilterSheet({
   const [locOpen, setLocOpen] = useState(false);
   const [locQuery, setLocQuery] = useState("");
   const [openCat, setOpenCat] = useState<string | null>(null);
+  const [extraOpen, setExtraOpen] = useState(false);
+  const [badCharNotice, setBadCharNotice] = useState(false);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function flashBadChar() {
+    setBadCharNotice(true);
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setBadCharNotice(false), 2500);
+  }
+
+  useEffect(() => () => { if (noticeTimer.current) clearTimeout(noticeTimer.current); }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -46,6 +60,7 @@ export function PhotographerFilterSheet({
     setLocOpen(false);
     setLocQuery("");
     setOpenCat(null);
+    setBadCharNotice(false);
   }, [open, value]);
 
   const locs = useMemo(() => {
@@ -86,12 +101,23 @@ export function PhotographerFilterSheet({
     });
   }
 
+  function toggleExtra(key: ExtraServiceKey) {
+    setDraft((d) => {
+      const cur = d.extraServices ?? [];
+      return {
+        ...d,
+        extraServices: cur.includes(key) ? cur.filter((x) => x !== key) : [...cur, key],
+      };
+    });
+  }
+
   function parsePrice(s: string): number | null {
     const n = Number(String(s).replace(/[^0-9]/g, ""));
     return Number.isFinite(n) && n > 0 ? n : null;
   }
 
   function handleApply() {
+    if (priceError) return;
     onApply({
       ...draft,
       priceMin: parsePrice(priceMinStr),
@@ -112,6 +138,17 @@ export function PhotographerFilterSheet({
     priceMin: parsePrice(priceMinStr),
     priceMax: parsePrice(priceMaxStr),
   });
+
+  // Kiểm tra khoảng giá: phải nhập từ nhỏ đến lớn, giá cao nhất phải > 0
+  const minN = parsePrice(priceMinStr);
+  const maxN = parsePrice(priceMaxStr);
+  const maxIsZero = priceMaxStr !== "" && maxN === null;
+  const minOverMax = minN != null && maxN != null && minN > maxN;
+  const priceError = maxIsZero
+    ? "Giá cao nhất phải lớn hơn 0."
+    : minOverMax
+      ? "Giá thấp nhất đang lớn hơn giá cao nhất. Hãy nhập từ nhỏ đến lớn."
+      : null;
 
   const locSummary =
     draft.locations.length === 0
@@ -254,22 +291,35 @@ export function PhotographerFilterSheet({
           <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2 mt-1">
             Giá tiền (VND)
           </p>
-          <div className="flex items-center gap-2 mb-4">
-            <input
-              inputMode="numeric"
-              value={priceMinStr}
-              onChange={(e) => setPriceMinStr(e.target.value.replace(/[^\d]/g, ""))}
-              placeholder="Từ"
-              className="flex-1 px-3 py-2.5 rounded-xl bg-muted text-sm outline-none min-w-0"
-            />
-            <span className="text-muted-foreground text-sm flex-shrink-0">—</span>
-            <input
-              inputMode="numeric"
-              value={priceMaxStr}
-              onChange={(e) => setPriceMaxStr(e.target.value.replace(/[^\d]/g, ""))}
-              placeholder="Đến"
-              className="flex-1 px-3 py-2.5 rounded-xl bg-muted text-sm outline-none min-w-0"
-            />
+          <div className="mb-4">
+            <div className="flex items-center gap-2">
+              <PriceInput
+                value={priceMinStr}
+                onChange={setPriceMinStr}
+                onBadChar={flashBadChar}
+                placeholder="Từ"
+                ariaLabel="Giá thấp nhất"
+                invalid={minOverMax}
+              />
+              <span className="text-muted-foreground text-sm flex-shrink-0">—</span>
+              <PriceInput
+                value={priceMaxStr}
+                onChange={setPriceMaxStr}
+                onBadChar={flashBadChar}
+                placeholder="Đến"
+                ariaLabel="Giá cao nhất"
+                invalid={minOverMax || maxIsZero}
+              />
+            </div>
+            {priceError || badCharNotice ? (
+              <p className="text-[11px] font-semibold mt-1.5 flex items-center gap-1" style={{ color: "#dc2626" }}>
+                <AlertCircle size={11} className="flex-shrink-0" /> {priceError || BAD_CHAR_MSG}
+              </p>
+            ) : (
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                Nhập giá từ thấp đến cao, ví dụ 500.000 — 2.000.000.
+              </p>
+            )}
           </div>
 
           {/* Thể loại chụp — 4 dropdown */}
@@ -330,6 +380,54 @@ export function PhotographerFilterSheet({
             })}
           </div>
 
+          {/* Dịch vụ thêm — dropdown, tick nhiều ô */}
+          <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">
+            Dịch vụ thêm
+          </p>
+          <div className="mb-4 rounded-xl border border-border overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setExtraOpen((v) => !v)}
+              aria-expanded={extraOpen}
+              className="w-full flex items-center justify-between gap-2 px-3 py-2.5 text-left text-sm font-semibold bg-white"
+            >
+              <span className="truncate">
+                {(draft.extraServices?.length ?? 0) === 0
+                  ? "Tất cả dịch vụ"
+                  : EXTRA_SERVICES.filter((x) => draft.extraServices.includes(x.key))
+                      .map((x) => x.label)
+                      .join(", ")}
+              </span>
+              <ChevronDown
+                size={16}
+                className="text-muted-foreground flex-shrink-0 transition-transform"
+                style={{ transform: extraOpen ? "rotate(180deg)" : undefined }}
+              />
+            </button>
+            {extraOpen && (
+              <div className="border-t border-border bg-muted/20 py-1">
+                {EXTRA_SERVICES.map((opt) => {
+                  const on = (draft.extraServices ?? []).includes(opt.key);
+                  return (
+                    <label
+                      key={opt.key}
+                      className="flex items-center gap-3 px-3 py-2.5 text-sm font-semibold cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        onChange={() => toggleExtra(opt.key)}
+                        className="w-4 h-4"
+                        style={{ accentColor: TEAL }}
+                      />
+                      <span>{opt.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           {/* Ưu tiên hiển thị — không còn chữ nhỏ bên phải */}
           <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground mb-2">
             Ưu tiên hiển thị
@@ -370,7 +468,8 @@ export function PhotographerFilterSheet({
           <button
             type="button"
             onClick={handleApply}
-            className="flex-[1.4] py-3 rounded-xl text-sm font-bold text-white"
+            disabled={!!priceError}
+            className="flex-[1.4] py-3 rounded-xl text-sm font-bold text-white disabled:opacity-45"
             style={{ background: TEAL }}
           >
             Apply{activeN > 0 ? ` (${activeN})` : ""}

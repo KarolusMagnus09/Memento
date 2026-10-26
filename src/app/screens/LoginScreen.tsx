@@ -7,7 +7,9 @@ import { validatePasswordStrength, PASSWORD_HINT } from "../lib/password";
 import { Captcha, CAPTCHA_ENABLED } from "../components/Captcha";
 import { OtpInput } from "../components/shared/OtpInput";
 import { FieldBox } from "../components/shared/FieldBox";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+
+const ALREADY_REGISTERED_MSG = "Tài khoản này đã được đăng ký. Hãy đăng nhập hoặc dùng email khác.";
 
 // Danh sách phương thức khôi phục mật khẩu — hiện chỉ Email hoạt động,
 // các phương thức khác để sẵn khung, bật enabled: true khi làm xong backend cho nó.
@@ -34,6 +36,8 @@ export default function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [captchaResetKey, setCaptchaResetKey] = useState(0);
+  // Bước nhập OTP không hiện captcha; chỉ khi bấm "Gửi lại" (server yêu cầu captcha) mới hiện ra để xác minh
+  const [showResendCaptcha, setShowResendCaptcha] = useState(false);
 
   function resetCaptcha() {
     setCaptchaToken(null);
@@ -209,7 +213,15 @@ export default function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
       });
       setLoading(false);
       resetCaptcha();
-      if (error) { applyServerError(error.message, ["email", "password"]); return; }
+      if (error) {
+        const code = (error as { code?: string }).code;
+        if (code === "user_already_exists" || code === "email_exists" || /already (been )?registered|already exists/i.test(error.message)) {
+          setFieldErrors({ email: ALREADY_REGISTERED_MSG });
+          return;
+        }
+        applyServerError(error.message, ["email", "password"]);
+        return;
+      }
       // Supabase KHÔNG trả `error` khi signUp() bằng 1 email đã tồn tại và
       // đã xác nhận — đây là hành vi cố ý để chống dò email (user
       // enumeration): nó trả về user "giả" với identities: [] thay vì báo
@@ -218,7 +230,7 @@ export default function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
       // khoản — đúng là bug đang gặp. Nên phải tự kiểm tra identities rỗng
       // để coi như lỗi "email đã được đăng ký".
       if (data.user && data.user.identities && data.user.identities.length === 0) {
-        applyServerError("User already registered", ["email", "password"]);
+        setFieldErrors({ email: ALREADY_REGISTERED_MSG });
         return;
       }
       setMode("verify-otp");
@@ -228,9 +240,11 @@ export default function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
   async function handleResend() {
     setError(null);
     if (CAPTCHA_ENABLED && !captchaToken) {
-      setError("Vui lòng hoàn thành xác minh CAPTCHA.");
+      // Chưa có token → hiện ô xác minh ngay tại đây; xác minh xong sẽ tự gửi lại (effect bên dưới)
+      setShowResendCaptcha(true);
       return;
     }
+    setShowResendCaptcha(false);
     setLoading(true);
     const { error } = await supabase.auth.resend({
       type: "signup", email,
@@ -241,6 +255,11 @@ export default function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
     if (error) { setError(translateAuthError(error.message)); return; }
     setInfo("Đã gửi lại mã. Kiểm tra email nhé.");
   }
+
+  useEffect(() => {
+    if (showResendCaptcha && captchaToken) void handleResend();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [captchaToken, showResendCaptcha]);
 
   const BackButton = ({ onClick }: { onClick: () => void }) => (
     <button onClick={onClick} className="w-9 h-9 rounded-full bg-white border border-border flex items-center justify-center mb-8">
@@ -266,9 +285,12 @@ export default function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
           </button>
         </div>
 
-        <div className="flex justify-center mt-3">
-          <Captcha onToken={setCaptchaToken} resetKey={captchaResetKey} />
-        </div>
+        {showResendCaptcha && CAPTCHA_ENABLED && (
+          <div className="flex flex-col items-center gap-1 mt-3">
+            <p className="text-[11px] text-muted-foreground">Xác minh nhanh để gửi lại mã</p>
+            <Captcha onToken={setCaptchaToken} resetKey={captchaResetKey} />
+          </div>
+        )}
 
         {error && <p className="text-xs text-red-600 text-center mt-3">{error}</p>}
         {info && <p className="text-xs text-center mt-3" style={{ color: TEAL_LIGHT }}>{info}</p>}
@@ -435,7 +457,7 @@ export default function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
             <Camera size={36} strokeWidth={1.5} />
           </div>
           <h1 className="text-2xl font-black" style={{ color: TEAL }}>Memento</h1>
-          <p className="text-sm text-muted-foreground mt-1">Kết nối cảm xúc qua từng khoảnh khắc 🐾</p>
+          <p className="text-sm text-muted-foreground mt-1">Kết nối cảm xúc qua từng khoảnh khắc</p>
         </div>
 
         <h2 className="text-xl font-bold mb-1" style={{ color: TEAL }}>Chào mừng trở lại</h2>
@@ -473,7 +495,7 @@ export default function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
         <p className="text-center text-sm mt-6 text-muted-foreground">
           Chưa có tài khoản?{" "}
           <button className="font-black" style={{ color: TEAL }} onClick={() => goTo("register")}>
-            Tham gia Memento 🐾
+            Đăng ký
           </button>
         </p>
       </div>

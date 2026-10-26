@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import { categoryLabel as svcCategoryLabel } from "./serviceCategories";
 
 /** Trạng thái vòng đời đơn */
 export type BookingStatus =
@@ -47,6 +48,9 @@ export type BookingRow = {
   drive_url?: string | null;
   drive_submitted_at?: string | null;
   shoot_done_at?: string | null;
+  /** Mỗi bên xác nhận buổi chụp xong (chỉ từ ngày chụp) */
+  shoot_confirm_client_at?: string | null;
+  shoot_confirm_ptg_at?: string | null;
   client_approved_at?: string | null;
   client_success_at?: string | null;
   ptg_success_at?: string | null;
@@ -252,6 +256,82 @@ export function isFullyDone(b: BookingRow) {
   return b.status === "completed" || !!b.drive_released_at;
 }
 
+
+/* ───────── Flow từng bước (1 nút / bước) ─────────
+ * wait_date     : đang chụp, chưa đến ngày → chỉ hiện chữ
+ * shoot_confirm : đến ngày chụp → mỗi bên bấm «Xác nhận đơn thành công»
+ * drive         : cả hai đã xác nhận → PTG gửi Drive, khách chờ
+ * review        : đã có Drive → khách góp ý, 2 bên xác nhận hoàn tất
+ * closing       : cả hai đã xác nhận hoàn tất → Memento xử lý
+ */
+export type FlowStep = "none" | "wait_date" | "shoot_confirm" | "drive" | "review" | "closing" | "done";
+
+/** Ngày hôm nay theo giờ Việt Nam (YYYY-MM-DD). Server mới là nơi kiểm tra thật. */
+export function todayVN(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+export function isShootDay(b: BookingRow): boolean {
+  return (b.booking_date || "").slice(0, 10) <= todayVN();
+}
+
+/** Đơn cũ đã có shoot_done_at coi như đã qua bước xác nhận chụp */
+export function bothShootConfirmed(b: BookingRow): boolean {
+  return !!(b.shoot_confirm_client_at && b.shoot_confirm_ptg_at) || !!b.shoot_done_at;
+}
+
+export function flowStep(b: BookingRow): FlowStep {
+  if (b.status === "completed" || b.drive_released_at) return "done";
+  if (b.status === "closing" || bothSuccessConfirmed(b)) return "closing";
+  if (b.drive_url) return "review";
+  if (!isActiveOrder(b)) return "none";
+  if (bothShootConfirmed(b)) return "drive";
+  return isShootDay(b) ? "shoot_confirm" : "wait_date";
+}
+
+/** Sau bao lâu bên kia im lặng thì cho phép báo cáo */
+export const SILENCE_HOURS = 48;
+
+export type SilenceInfo = { waitingOn: "client" | "ptg"; since: string; overdue: boolean };
+
+/** Ai đang bị chờ, từ lúc nào, đã quá hạn chưa (dùng để gợi ý nút Báo cáo) */
+export function silenceInfo(b: BookingRow): SilenceInfo | null {
+  const step = flowStep(b);
+  let waitingOn: "client" | "ptg" | null = null;
+  let since: string | null = null;
+
+  if (step === "shoot_confirm") {
+    if (b.shoot_confirm_client_at && !b.shoot_confirm_ptg_at) {
+      waitingOn = "ptg";
+      since = b.shoot_confirm_client_at;
+    } else if (b.shoot_confirm_ptg_at && !b.shoot_confirm_client_at) {
+      waitingOn = "client";
+      since = b.shoot_confirm_ptg_at;
+    }
+  } else if (step === "drive") {
+    waitingOn = "ptg";
+    const a = b.shoot_confirm_client_at || "";
+    const p = b.shoot_confirm_ptg_at || "";
+    since = (a > p ? a : p) || b.shoot_done_at || b.updated_at || null;
+  } else if (step === "review") {
+    if (b.client_success_at && !b.ptg_success_at) {
+      waitingOn = "ptg";
+      since = b.client_success_at;
+    } else if (b.ptg_success_at && !b.client_success_at) {
+      waitingOn = "client";
+      since = b.ptg_success_at;
+    }
+  }
+  if (!waitingOn || !since) return null;
+  const overdue = Date.now() - new Date(since).getTime() > SILENCE_HOURS * 3600 * 1000;
+  return { waitingOn, since, overdue };
+}
+
 export function isPaid(b: BookingRow) {
   return (
     !!b.deposit_paid_at ||
@@ -315,11 +395,7 @@ export function buildServiceOptions(photographer: {
 }
 
 export function categoryLabel(cat: string) {
-  const c = (cat || "").toLowerCase();
-  if (c === "makeup") return "Make Up";
-  if (c === "editor") return "Editor";
-  if (c === "rental") return "Thuê & phụ kiện";
-  return "Chụp ảnh";
+  return svcCategoryLabel(cat);
 }
 
 export function buildBillCode(bookingId: string, prefix = "MMT"): string {
@@ -355,11 +431,9 @@ export function buildVietQrUrl(opts: {
   params.set("bank", opts.bank);
   params.set("amount", String(Math.round(opts.amount)));
   params.set("des", opts.description.replace(/[^a-zA-Z0-9\- ]/g, "").slice(0, 25));
-  params.set("template", "compact");
-  params.set("showinfo", "true");
-  if (opts.accountName) params.set("holder", opts.accountName);
-  if (opts.storeName) params.set("store", opts.storeName);
-  return `https://vietqr.app/img?${params.toString()}`;
+  // qronly: chỉ ảnh mã QR (không logo/chữ trong ảnh). Thông tin chuyển khoản app tự hiển thị bên dưới.
+  params.set("template", "qronly");
+  return `https://qr.sepay.vn/img?${params.toString()}`;
 }
 
 export async function createBooking(
@@ -376,6 +450,9 @@ export async function createBooking(
     | "remaining_amount"
   > & { status?: BookingStatus }
 ): Promise<{ data: BookingRow | null; error: string | null }> {
+  if (input.photographer_user_id && input.client_id === input.photographer_user_id) {
+    return { data: null, error: "Bạn không thể tự đặt lịch với chính mình." };
+  }
   const total = Number(input.package_price) || 0;
   const row = {
     ...input,
@@ -490,35 +567,40 @@ export async function submitDriveUrl(id: string, driveUrl: string, note?: string
   if (cur && (cur.status === "completed" || cur.drive_released_at)) {
     return "Đơn đã hoàn thành, không thể gửi hoặc đổi link Drive nữa";
   }
-  return updateBookingStatus(id, "handover", {
-    drive_url: driveUrl,
-    drive_submitted_at: new Date().toISOString(),
-    handover_note: note || null,
-  });
+  // Ghi thẳng DB, KHÔNG dùng fallback local của updateBookingStatus:
+  // nếu RLS/CHECK từ chối thì phải báo lỗi thật, không báo "đã gửi" giả.
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("bookings")
+    .update({
+      status: "handover",
+      drive_url: driveUrl,
+      drive_submitted_at: now,
+      handover_note: note || null,
+      updated_at: now,
+    })
+    .eq("id", id)
+    .select("id");
+  if (error) return error.message;
+  if (!data || data.length === 0) {
+    return "Không lưu được link (không có quyền cập nhật đơn này). Hãy đăng nhập lại hoặc báo admin.";
+  }
+  return null;
 }
 
-/** User hoặc PTG bấm xác nhận hoàn tất đơn (sau bàn giao) */
+/** Mỗi bên xác nhận buổi chụp xong — server kiểm tra ngày chụp + đúng người (RPC confirm_shoot) */
+export async function confirmShoot(id: string): Promise<string | null> {
+  const { error } = await supabase.rpc("confirm_shoot", { p_booking: id });
+  return error ? error.message : null;
+}
+
+/** User hoặc PTG bấm xác nhận hoàn tất đơn (sau khi có Drive) — RPC confirm_final tự chuyển closing khi đủ 2 bên */
 export async function confirmOrderSuccess(
   id: string,
-  role: "client" | "ptg"
+  _role?: "client" | "ptg"
 ): Promise<string | null> {
-  const patch: Partial<BookingRow> = {
-    updated_at: new Date().toISOString(),
-  } as Partial<BookingRow>;
-  if (role === "client") patch.client_success_at = new Date().toISOString();
-  else patch.ptg_success_at = new Date().toISOString();
-
-  // load current to see if both done
-  const { data } = await supabase.from("bookings").select("*").eq("id", id).maybeSingle();
-  const row = data as BookingRow | null;
-  const clientOk = role === "client" || !!row?.client_success_at;
-  const ptgOk = role === "ptg" || !!row?.ptg_success_at;
-  const nextStatus = clientOk && ptgOk ? "closing" : (row?.status === "handover" ? "handover" : "closing");
-
-  return updateBookingStatus(id, nextStatus as BookingStatus, {
-    ...patch,
-    ...(role === "client" ? { client_success_at: new Date().toISOString() } : { ptg_success_at: new Date().toISOString() }),
-  });
+  const { error } = await supabase.rpc("confirm_final", { p_booking: id });
+  return error ? error.message : null;
 }
 
 /** Admin chuyển nốt 70% (sau khi 2 bên xác nhận) */

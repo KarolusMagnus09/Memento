@@ -2,11 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Camera, X } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { ScrollText } from "./ScrollText";
+import { ConfirmModal } from "./ConfirmModal";
 import {
   FEEDBACK_BUCKET,
   MAX_FEEDBACK_IMAGES,
   addPhotoFeedback,
-  clientApproveHandover,
+  confirmOrderSuccess,
+  bothSuccessConfirmed,
   fetchPhotoFeedback,
   resolveFeedback,
   isFullyDone,
@@ -76,27 +78,117 @@ function StatusChip({ resolved }: { resolved: boolean }) {
   );
 }
 
+
+/** Nút xác nhận hoàn tất đơn dùng chung 2 bên: bấm trước → chờ bên kia; bên kia nhận popup thông báo */
+function FinalConfirm({
+  booking, role, accent, notify, onChanged, extraWarn,
+}: {
+  booking: BookingRow;
+  role: "ptg" | "client";
+  accent: string;
+  notify: (msg: string) => void;
+  onChanged: () => void;
+  extraWarn?: string;
+}) {
+  const [ask, setAsk] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const mine = role === "client" ? booking.client_success_at : booking.ptg_success_at;
+  const other = role === "client" ? booking.ptg_success_at : booking.client_success_at;
+  const otherName =
+    role === "client" ? booking.photographer_name || "Photographer" : booking.client_name || "Khách hàng";
+
+  if (!booking.drive_url) return null;
+
+  if (mine) {
+    return (
+      <div
+        className="rounded-xl px-3 py-2.5 text-xs font-semibold text-center"
+        style={{ background: "#FFF8E7", color: "#92400e", border: "1px solid #FDE68A" }}
+      >
+        ✓ Bạn đã xác nhận hoàn tất — {other ? "đang xử lý..." : `đang chờ ${otherName} xác nhận`}
+      </div>
+    );
+  }
+
+  async function doConfirm() {
+    setBusy(true);
+    const err = await confirmOrderSuccess(booking.id, role);
+    setBusy(false);
+    setAsk(false);
+    if (err) return notify(err);
+    notify(other ? "Cả hai đã xác nhận — đơn hoàn tất" : `Đã xác nhận. Đang chờ ${otherName} xác nhận`);
+    onChanged();
+  }
+
+  const message = [
+    other
+      ? `${otherName} đã xác nhận hoàn tất. Bạn xác nhận để chốt đơn.`
+      : `Bạn xác nhận trước thì đơn sẽ chờ ${otherName} xác nhận. ${otherName} sẽ nhận được thông báo.`,
+    extraWarn,
+  ].filter(Boolean).join(" ");
+
+  return (
+    <>
+      {other && (
+        <div
+          className="rounded-xl px-3 py-2 text-xs font-semibold"
+          style={{ background: "#ECFDF5", color: "#065f46", border: "1px solid #A7F3D0" }}
+        >
+          🔔 {otherName} đã xác nhận hoàn tất, đang chờ bạn.
+        </div>
+      )}
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => setAsk(true)}
+        className="w-full py-3 rounded-xl text-sm font-bold text-white disabled:opacity-50"
+        style={{ background: accent }}
+      >
+        {role === "client" ? "Mình hài lòng — xác nhận hoàn tất đơn" : "Xác nhận hoàn tất đơn"}
+      </button>
+      {ask && (
+        <ConfirmModal
+          title="Xác nhận hoàn tất đơn?"
+          message={message}
+          onBackdropClick={() => setAsk(false)}
+          actions={[
+            { label: busy ? "Đang gửi..." : "Xác nhận", onClick: doConfirm },
+            { label: "Để sau", variant: "secondary", onClick: () => setAsk(false) },
+          ]}
+        />
+      )}
+    </>
+  );
+}
+
 function PtgPanel({ booking, accent, onChanged, notify }: Props) {
   const { list, reload } = useFeedback(booking.id);
   const [url, setUrl] = useState("");
   const [viewOnly, setViewOnly] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [formErr, setFormErr] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const hasLink = !!booking.drive_url;
   const pending = list.filter((f) => !f.resolved).length;
   // Đơn đã hoàn thành → đóng việc gửi/đổi link Drive
-  const locked = isFullyDone(booking);
+  const locked = isFullyDone(booking) || bothSuccessConfirmed(booking);
 
   async function send() {
-    if (locked) return notify("Đơn đã hoàn thành, không thể gửi hoặc đổi link Drive nữa");
+    // Hiện lỗi ngay dưới nút (toast của trang nằm tận đầu trang, dễ bị bỏ sót)
+    const fail = (msg: string) => {
+      setFormErr(msg);
+      notify(msg);
+    };
+    setFormErr(null);
+    if (locked) return fail("Đơn đã hoàn thành, không thể gửi hoặc đổi link Drive nữa");
     const bad = validateDriveUrl(url);
-    if (bad) return notify(bad);
-    if (!viewOnly) return notify("Hãy xác nhận bạn đã chia sẻ Drive ở quyền Người xem");
-    if (url.trim() === booking.drive_url) return notify("Link này đang được dùng rồi");
+    if (bad) return fail(bad);
+    if (!viewOnly) return fail("Hãy xác nhận bạn đã chia sẻ Drive ở quyền Người xem");
+    if (url.trim() === booking.drive_url) return fail("Link này đang được dùng rồi");
     setBusy(true);
     const err = await submitDriveUrl(booking.id, url.trim());
     setBusy(false);
-    if (err) return notify(err);
+    if (err) return fail(err);
     notify(hasLink ? "Đã cập nhật link Drive — khách sẽ thấy link mới" : "Đã gửi link Drive cho khách");
     setUrl("");
     setViewOnly(false);
@@ -130,7 +222,7 @@ function PtgPanel({ booking, accent, onChanged, notify }: Props) {
 
           <input
             value={url}
-            onChange={(e) => setUrl(e.target.value)}
+            onChange={(e) => { setUrl(e.target.value); setFormErr(null); }}
             placeholder={hasLink ? "Dán link Drive MỚI để thay thế..." : "Dán link album Google Drive tại đây..."}
             className="w-full rounded-xl border border-border px-3 py-2 text-xs"
           />
@@ -147,6 +239,11 @@ function PtgPanel({ booking, accent, onChanged, notify }: Props) {
           >
             {busy ? "Đang gửi..." : hasLink ? "Cập nhật link ảnh" : "Gửi link ảnh cho khách"}
           </button>
+          {formErr && (
+            <p role="alert" className="text-[11px] font-semibold rounded-lg px-3 py-2" style={{ background: "#fef2f2", color: "#b91c1c", border: "1px solid #fecaca" }}>
+              {formErr}
+            </p>
+          )}
         </>
       )}
       {hasLink && (
@@ -200,6 +297,10 @@ function PtgPanel({ booking, accent, onChanged, notify }: Props) {
           </div>
         )}
       </div>
+
+      {hasLink && !locked && (
+        <FinalConfirm booking={booking} role="ptg" accent={accent} notify={notify} onChanged={onChanged} />
+      )}
     </div>
   );
 }
@@ -212,7 +313,6 @@ function ClientPanel({ booking, userId, accent, onChanged, notify }: Props) {
   const [previews, setPreviews] = useState<string[]>([]);
   const [basedOn, setBasedOn] = useState<number | null>(null);
   const [sending, setSending] = useState(false);
-  const [approving, setApproving] = useState(false);
   const composerRef = useRef<HTMLDivElement>(null);
   const unresolved = list.filter((f) => !f.resolved).length;
 
@@ -261,25 +361,6 @@ function ClientPanel({ booking, userId, accent, onChanged, notify }: Props) {
     setFiles([]);
     setBasedOn(null);
     await reload();
-  }
-
-  async function approve() {
-    if (!booking.drive_url) {
-      notify("Photographer chưa gửi link Drive. Không thể hoàn tất khi chưa có file ảnh demo.");
-      return;
-    }
-    if (
-      unresolved > 0 &&
-      !confirm(`Còn ${unresolved} yêu cầu chưa được photographer đánh dấu "đã chỉnh". Bạn vẫn muốn hoàn tất lịch hẹn?`)
-    ) {
-      return;
-    }
-    setApproving(true);
-    const err = await clientApproveHandover(booking.id);
-    setApproving(false);
-    if (err) return notify(err);
-    notify("Cảm ơn bạn! Lịch hẹn đã hoàn tất");
-    onChanged();
   }
 
   return (
@@ -380,15 +461,18 @@ function ClientPanel({ booking, userId, accent, onChanged, notify }: Props) {
         </button>
       </div>
 
-      <button
-        type="button"
-        disabled={approving || !booking.drive_url}
-        onClick={approve}
-        className="w-full py-3 rounded-xl text-sm font-bold text-white disabled:opacity-50"
-        style={{ background: accent }}
-      >
-        Mình hài lòng — hoàn tất lịch hẹn
-      </button>
+      <FinalConfirm
+        booking={booking}
+        role="client"
+        accent={accent}
+        notify={notify}
+        onChanged={onChanged}
+        extraWarn={
+          unresolved > 0
+            ? `Còn ${unresolved} yêu cầu chưa được photographer đánh dấu "đã chỉnh".`
+            : undefined
+        }
+      />
     </div>
   );
 }

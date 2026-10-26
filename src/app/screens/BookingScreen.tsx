@@ -1,7 +1,9 @@
 import { Calendar, ChevronLeft, Star, Clock, StickyNote } from "lucide-react";
 import type { Screen, Photographer } from "../types";
 import { TEAL, TEAL_MID, TEAL_LIGHT, BG } from "../constants";
+import { categoryDef } from "../lib/serviceCategories";
 import { Avatar } from "../components/shared/Avatar";
+import { getLocations } from "../lib/photographerDisplay";
 import { useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
 import {
@@ -55,7 +57,7 @@ export default function BookingScreen({
 
   /** Nhóm theo category để UI giống bảng giá */
   const groups = useMemo(() => {
-    const order = ["photo", "makeup", "editor", "rental"];
+    const order = ["photo", "makeup", "editor", "rental", "rental_studio", "rental_outfit", "others"];
     const map = new Map<string, { category: string; title: string; items: BookingServiceOption[] }>();
     for (const o of options) {
       const cat = o.category || "photo";
@@ -296,7 +298,7 @@ export default function BookingScreen({
             <p className="font-bold truncate" style={{ color: TEAL }}>
               {photographer.name}
             </p>
-            <p className="text-xs text-muted-foreground truncate">{photographer.location}</p>
+            <p className="text-xs text-muted-foreground truncate">{getLocations(photographer, 20).join(", ") || photographer.location}</p>
             <div className="flex items-center gap-1 mt-1">
               <Star size={11} fill="#f59e0b" stroke="#f59e0b" />
               <span className="text-xs font-semibold">
@@ -329,24 +331,7 @@ export default function BookingScreen({
                   <div className="flex items-center gap-2 mb-2">
                     <span
                       className="text-[10px] font-black px-2 py-0.5 rounded-full"
-                      style={{
-                        background:
-                          g.category === "makeup"
-                            ? "#fce7f3"
-                            : g.category === "editor"
-                              ? "#e0e7ff"
-                              : g.category === "rental"
-                                ? "#fef3c7"
-                                : "#e8f5f0",
-                        color:
-                          g.category === "makeup"
-                            ? "#be185d"
-                            : g.category === "editor"
-                              ? "#4338ca"
-                              : g.category === "rental"
-                                ? "#b45309"
-                                : TEAL,
-                      }}
+                      style={{ background: categoryDef(g.category).bg, color: categoryDef(g.category).fg }}
                     >
                       {categoryLabel(g.category)}
                     </span>

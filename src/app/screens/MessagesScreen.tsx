@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Search } from "lucide-react";
+import { Search, Trash2 } from "lucide-react";
 import type { Screen } from "../types";
 import { TEAL, TEAL_LIGHT, BG } from "../constants";
 import { Avatar } from "../components/shared/Avatar";
@@ -11,6 +11,7 @@ import {
   type ChatTarget,
   type ConversationItem,
 } from "../lib/chat";
+import { formatNotifTime, notifIcon, deleteNotification, type AppNotification } from "../lib/notifications";
 
 /** Bỏ dấu để tìm "duong" ra "Dương" */
 const norm = (s: string) =>
@@ -19,10 +20,24 @@ const norm = (s: string) =>
 export default function MessagesScreen({
   userId,
   onOpenChat,
+  notifications = [],
+  notifUnread = 0,
+  chatUnread = 0,
+  onOpenNotification,
+  onMarkAllNotifRead,
+  onNotifDeleted,
 }: {
   userId: string;
   onOpenChat: (target: ChatTarget, from?: Screen) => void;
+  /** Thông báo hệ thống (đơn hàng, thanh toán...) */
+  notifications?: AppNotification[];
+  notifUnread?: number;
+  chatUnread?: number;
+  onOpenNotification?: (n: AppNotification) => void;
+  onMarkAllNotifRead?: () => void;
+  onNotifDeleted?: () => void;
 }) {
+  const [view, setView] = useState<"chat" | "notif">("chat");
   const [items, setItems] = useState<ConversationItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -78,6 +93,28 @@ export default function MessagesScreen({
     <div className="flex flex-col min-h-full pb-24" style={{ background: BG }}>
       <div className="px-5 py-3 relative" style={{ background: TEAL }}>
         <h2 className="font-bold text-base text-white mb-2">Tin nhắn</h2>
+        <div className="flex gap-2 mb-2">
+          {([
+            { id: "chat", label: "Trò chuyện", n: chatUnread },
+            { id: "notif", label: "Thông báo", n: notifUnread },
+          ] as const).map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setView(t.id)}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition-colors"
+              style={{ background: view === t.id ? "#fff" : "rgba(255,255,255,0.15)", color: view === t.id ? TEAL : "#fff" }}
+            >
+              {t.label}
+              {t.n > 0 && (
+                <span className="min-w-[16px] h-4 px-1 rounded-full text-white text-[10px] font-bold flex items-center justify-center" style={{ background: "#ef4444" }}>
+                  {t.n > 99 ? "99+" : t.n}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+        {view === "chat" && (
         <div className="flex items-center gap-2 bg-white rounded-2xl px-4 py-2.5 shadow-md">
           <Search size={14} className="text-muted-foreground" />
           <input
@@ -88,8 +125,60 @@ export default function MessagesScreen({
             aria-label="Tìm cuộc trò chuyện"
           />
         </div>
+        )}
       </div>
 
+      {view === "notif" ? (
+        <div className="px-4 mt-3">
+          {notifications.length > 0 && notifUnread > 0 && (
+            <div className="flex justify-end mb-2">
+              <button type="button" onClick={onMarkAllNotifRead} className="text-xs font-bold" style={{ color: TEAL_LIGHT }}>
+                Đánh dấu tất cả đã đọc
+              </button>
+            </div>
+          )}
+          {notifications.length === 0 ? (
+            <div className="flex flex-col items-center py-20 text-center">
+              <span className="text-6xl mb-3">🔔</span>
+              <h3 className="font-bold mb-1" style={{ color: TEAL }}>Chưa có thông báo nào</h3>
+              <p className="text-sm text-muted-foreground">Thông báo về đơn đặt lịch và thanh toán sẽ hiện ở đây.</p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-1">
+              {notifications.map((n) => (
+                <div key={n.id} className="relative">
+                  <button
+                    type="button"
+                    onClick={() => onOpenNotification?.(n)}
+                    className="flex items-start gap-3 bg-white p-4 pr-10 rounded-2xl border border-border active:bg-muted transition-colors text-left w-full"
+                    style={!n.read_at ? { borderColor: TEAL_LIGHT } : undefined}
+                  >
+                    <span className="w-10 h-10 rounded-full flex items-center justify-center text-lg flex-shrink-0" style={{ background: "#e8f3ef" }}>
+                      {notifIcon(n.type)}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className={`text-sm truncate ${!n.read_at ? "font-black" : "font-bold"}`}>{n.title}</p>
+                        <p className="text-[11px] text-muted-foreground flex-shrink-0">{formatNotifTime(n.created_at)}</p>
+                      </div>
+                      <p className={`text-xs mt-0.5 leading-relaxed ${!n.read_at ? "text-foreground" : "text-muted-foreground"}`}>{n.body}</p>
+                    </div>
+                    {!n.read_at && <span className="w-2 h-2 rounded-full flex-shrink-0 mt-1.5" style={{ background: "#ef4444" }} />}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Xóa thông báo"
+                    onClick={async () => { await deleteNotification(n.id); onNotifDeleted?.(); }}
+                    className="absolute right-2 bottom-2 w-7 h-7 rounded-full flex items-center justify-center text-muted-foreground"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
       <div className="px-4 mt-3">
         {loading ? (
           <p className="text-center text-sm text-muted-foreground py-16">Đang tải tin nhắn...</p>
@@ -164,6 +253,7 @@ export default function MessagesScreen({
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { User, Bell, ChevronRight, Camera, Phone, Settings, Globe, LogOut, Image as ImageIcon } from "lucide-react";
+import { signOutSafely } from "../lib/pushNotifications";
 import type { Screen, Photographer } from "../types";
 import type { Profile } from "../hooks/useProfile";
 import { TEAL, TEAL_MID, BG } from "../constants";
@@ -280,7 +281,7 @@ export default function ProfileScreen({
           ))}
         </div>
 
-        <button onClick={async () => { await supabase.auth.signOut(); setScreen("login"); }}
+        <button onClick={async () => { await signOutSafely(); setScreen("login"); }}
           className="w-full py-3.5 rounded-2xl border-2 border-destructive flex items-center justify-center gap-2 font-bold text-destructive bg-white">
           <LogOut size={16} /> Đăng xuất
         </button>

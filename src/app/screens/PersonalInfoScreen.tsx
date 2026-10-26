@@ -3,11 +3,13 @@ import { ChevronLeft, Camera as CameraIcon, Image as ImageIcon } from "lucide-re
 import { Camera, CameraResultType, CameraSource } from "@capacitor/camera";
 import type { Screen } from "../types";
 import type { Profile } from "../hooks/useProfile";
-import { TEAL, TEAL_LIGHT, BG, DEFAULT_AVATAR } from "../constants";
+import { TEAL, TEAL_LIGHT, BG } from "../constants";
 import { supabase } from "../lib/supabase";
 import { normalizeVnPhone } from "../lib/phone";
 import { FieldBox } from "../components/shared/FieldBox";
 import { Badge } from "../components/shared/Badge";
+import { Avatar } from "../components/shared/Avatar";
+import { AvatarCropper } from "../components/shared/AvatarCropper";
 import { ConfirmModal } from "../components/shared/ConfirmModal";
 
 export default function PersonalInfoScreen({
@@ -24,6 +26,8 @@ export default function PersonalInfoScreen({
   const [avatarPreview, setAvatarPreview] = useState<string | null>(profile.avatar_url);
   const [avatarIsNew, setAvatarIsNew] = useState(false);
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
+  // Ảnh vừa chọn, đang chờ cắt (null = không mở khung cắt)
+  const [cropSrc, setCropSrc] = useState<string | null>(null);
   const [pickingPhoto, setPickingPhoto] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveInfo, setSaveInfo] = useState<string | null>(null);
@@ -90,8 +94,9 @@ export default function PersonalInfoScreen({
     setSaveError(null);
     setPickingPhoto(true);
     try {
-      const photo = await Camera.getPhoto({ quality: 70, allowEditing: true, resultType: CameraResultType.DataUrl, source });
-      if (photo.dataUrl) { setAvatarPreview(photo.dataUrl); setAvatarIsNew(true); }
+      // allowEditing: false → không dùng khung cắt của hệ điều hành, app tự mở khung cắt kiểu Facebook (AvatarCropper)
+      const photo = await Camera.getPhoto({ quality: 90, allowEditing: false, resultType: CameraResultType.DataUrl, source });
+      if (photo.dataUrl) setCropSrc(photo.dataUrl);
     } catch {
       // Người dùng hủy hộp thoại — bỏ qua.
     } finally {
@@ -150,8 +155,8 @@ export default function PersonalInfoScreen({
         {/* ẢNH ĐẠI DIỆN — bấm để đổi (chụp ảnh / thư viện) */}
         <div className="flex flex-col items-center mb-2">
           <button onClick={() => setAvatarPickerOpen(v => !v)} disabled={pickingPhoto} className="relative">
-            <img src={avatarPreview || DEFAULT_AVATAR} alt="avatar" width={80} height={80}
-              className="rounded-full object-cover border-4" style={{ borderColor: "#fff", boxShadow: "0 2px 12px rgba(0,0,0,0.08)" }} />
+            <Avatar src={avatarPreview} size={80} className="border-4"
+              style={{ borderColor: "#fff", boxShadow: "0 2px 12px rgba(0,0,0,0.08)" }} />
             <span className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full text-white flex items-center justify-center" style={{ background: TEAL_LIGHT }}>
               <CameraIcon size={13} strokeWidth={2.5} />
             </span>
@@ -247,6 +252,14 @@ export default function PersonalInfoScreen({
             { label: "Không lưu", variant: "danger", onClick: () => { setShowUnsavedModal(false); setScreen("profile"); } },
             { label: "Hủy", variant: "secondary", onClick: () => setShowUnsavedModal(false) },
           ]}
+        />
+      )}
+
+      {cropSrc && (
+        <AvatarCropper
+          src={cropSrc}
+          onCancel={() => setCropSrc(null)}
+          onConfirm={(dataUrl) => { setAvatarPreview(dataUrl); setAvatarIsNew(true); setCropSrc(null); }}
         />
       )}
     </div>

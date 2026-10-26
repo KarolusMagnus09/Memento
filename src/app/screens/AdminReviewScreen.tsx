@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import type { Screen } from "../types";
 import { TEAL, TEAL_MID, TEAL_LIGHT, BG } from "../constants";
+import { Avatar } from "../components/shared/Avatar";
 import { supabase } from "../lib/supabase";
 import { notifyUserApplicationResult } from "../lib/notifySupport";
 import { useCallback, useEffect, useState } from "react";
@@ -308,11 +309,7 @@ export default function AdminReviewScreen({ setScreen }: { setScreen: (s: Screen
                   setRejectNote("");
                 }}
               >
-                {row.avatar_url ? (
-                  <img src={row.avatar_url} alt="" className="w-14 h-14 rounded-full object-cover border-2 border-white shadow" />
-                ) : (
-                  <div className="w-14 h-14 rounded-full bg-muted flex items-center justify-center text-lg">👤</div>
-                )}
+                <Avatar src={row.avatar_url} size={56} className="border-2 border-white shadow" />
                 <div className="flex-1 min-w-0">
                   <p className="font-black text-sm truncate" style={{ color: TEAL }}>
                     {row.full_name || "—"}

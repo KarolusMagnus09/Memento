@@ -6,6 +6,8 @@ import { notifyProfileUpdate } from "../lib/notifySupport";
 import { useEffect, useRef, useState } from "react";
 import { uploadImagesIfLocal } from "../lib/uploadFile";
 import { PortfolioEditor } from "../components/shared/PortfolioEditor";
+import { GroupCountBadge } from "../components/shared/GroupCountBadge";
+import { SERVICE_CATEGORIES, categoryDef, normalizeCategory } from "../lib/serviceCategories";
 
 type PriceLine = { id: string; name: string; price: string; detail: string };
 type PriceGroup = {
@@ -47,7 +49,7 @@ function uid() {
 function emptyGroup(cat = "photo"): PriceGroup {
   return {
     id: uid(),
-    title: cat === "rental" ? "Thuê & phụ kiện" : cat === "makeup" ? "Make Up" : "Chụp ảnh",
+    title: categoryDef(cat).label,
     category: cat,
     lines: [{ id: uid(), name: "", price: "", detail: "" }],
   };
@@ -85,6 +87,8 @@ export default function EditPhotographerProfileScreen({
   const [skillEdit, setSkillEdit] = useState(false);
   const [skillRental, setSkillRental] = useState(false);
   const [priceGroups, setPriceGroups] = useState<PriceGroup[]>([]);
+  /** Tăng mỗi lần bấm "Thêm nhóm" → hiện chấm đỏ đếm số nhóm giá */
+  const [groupPulse, setGroupPulse] = useState(0);
   const [standalonePins, setStandalonePins] = useState<string[]>([]);
   const [boards, setBoards] = useState<Board[]>([]);
   const [rentalPins, setRentalPins] = useState<string[]>([]);
@@ -140,7 +144,11 @@ export default function EditPhotographerProfileScreen({
             pg = [];
           }
         }
-        setPriceGroups(Array.isArray(pg) && pg.length ? pg : [emptyGroup("photo")]);
+        setPriceGroups(
+          Array.isArray(pg) && pg.length
+            ? pg.map((g: PriceGroup) => ({ ...g, category: normalizeCategory(g.category) })) // "rental" cũ → "Thuê studio"
+            : [emptyGroup("photo")]
+        );
 
         const asPins = (v: unknown): string[] => {
           if (Array.isArray(v)) return v.filter((x) => typeof x === "string");
@@ -352,13 +360,13 @@ export default function EditPhotographerProfileScreen({
 
   return (
     <div className="flex flex-col min-h-full pb-28" style={{ background: BG }}>
+      <GroupCountBadge count={priceGroups.length} pulse={groupPulse} />
       <div className="px-4 py-3 flex items-center gap-2 sticky top-0 z-10" style={{ background: TEAL }}>
         <button type="button" onClick={() => setScreen("photographer-profile")} className="p-2 text-white">
           <ChevronLeft size={22} />
         </button>
         <div className="flex-1">
           <h2 className="font-bold text-white text-sm">Cập nhật hồ sơ</h2>
-          <p className="text-white/70 text-[11px]">Không cần nộp lại CCCD · lưu log cho admin</p>
         </div>
       </div>
 
@@ -518,8 +526,8 @@ export default function EditPhotographerProfileScreen({
           </p>
           {[
             { v: skillMakeup, set: setSkillMakeup, label: "Make up" },
-            { v: skillEdit, set: setSkillEdit, label: "Edit ảnh" },
-            { v: skillRental, set: setSkillRental, label: "Thuê & phụ kiện" },
+            { v: skillEdit, set: setSkillEdit, label: "Edit / Retouch ảnh" },
+            { v: skillRental, set: setSkillRental, label: "Thuê (studio / quần áo)" },
           ].map((x) => (
             <label key={x.label} className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={x.v} onChange={(e) => x.set(e.target.checked)} />
@@ -536,7 +544,10 @@ export default function EditPhotographerProfileScreen({
             </p>
             <button
               type="button"
-              onClick={() => setPriceGroups((g) => [...g, emptyGroup("photo")])}
+              onClick={() => {
+                setPriceGroups((g) => [...g, emptyGroup("photo")]);
+                setGroupPulse((n) => n + 1);
+              }}
               className="text-xs font-bold flex items-center gap-1"
               style={{ color: TEAL }}
             >
@@ -544,8 +555,8 @@ export default function EditPhotographerProfileScreen({
             </button>
           </div>
           {priceGroups.map((g, gi) => (
-            <div key={g.id} className="border border-border rounded-xl p-3 space-y-2">
-              <div className="flex gap-2">
+            <div key={g.id} className="border border-border rounded-xl p-3 space-y-2 min-w-0 overflow-hidden">
+              <div className="flex items-center gap-2 min-w-0">
                 <input
                   value={g.title}
                   onChange={(e) =>
@@ -553,7 +564,7 @@ export default function EditPhotographerProfileScreen({
                       gs.map((x, i) => (i === gi ? { ...x, title: e.target.value } : x))
                     )
                   }
-                  className="flex-1 rounded-lg border border-border px-2 py-1.5 text-xs font-bold"
+                  className="flex-1 min-w-0 rounded-lg border border-border px-2 py-1.5 text-xs font-bold"
                   placeholder="Tên nhóm"
                 />
                 <select
@@ -563,17 +574,17 @@ export default function EditPhotographerProfileScreen({
                       gs.map((x, i) => (i === gi ? { ...x, category: e.target.value } : x))
                     )
                   }
-                  className="rounded-lg border border-border px-2 py-1.5 text-xs"
+                  className="w-[104px] max-w-[40%] flex-shrink-0 min-w-0 truncate rounded-lg border border-border bg-white px-2 py-1.5 text-xs"
                 >
-                  <option value="photo">Chụp</option>
-                  <option value="makeup">Makeup</option>
-                  <option value="editor">Edit</option>
-                  <option value="rental">Thuê</option>
+                  {SERVICE_CATEGORIES.map((c) => (
+                    <option key={c.value} value={c.value}>{c.label}</option>
+                  ))}
                 </select>
                 <button
                   type="button"
                   onClick={() => setPriceGroups((gs) => gs.filter((_, i) => i !== gi))}
-                  className="text-red-500 p-1"
+                  className="text-red-500 p-1 flex-shrink-0"
+                  aria-label="Xóa nhóm giá"
                 >
                   <Trash2 size={14} />
                 </button>

@@ -2,9 +2,11 @@ import { useBackHandler } from "../../lib/backNavigation";
 import { useState } from "react";
 import { Camera as CameraIcon, Image as ImageIcon, ChevronLeft, PartyPopper } from "lucide-react";
 import { Camera, CameraResultType, CameraSource } from "@capacitor/camera";
-import { TEAL, TEAL_MID, TEAL_LIGHT, BG, DEFAULT_AVATAR } from "../../constants";
+import { TEAL, TEAL_MID, TEAL_LIGHT, BG } from "../../constants";
 import { supabase } from "../../lib/supabase";
 import { FieldBox } from "../../components/shared/FieldBox";
+import { Avatar } from "../../components/shared/Avatar";
+import { AvatarCropper } from "../../components/shared/AvatarCropper";
 import { normalizeVnPhone } from "../../lib/phone";
 import type { Profile } from "../../hooks/useProfile";
 
@@ -38,6 +40,8 @@ export default function OnboardingFlow({
 
   const [avatarPreview, setAvatarPreview] = useState<string | null>(profile.avatar_url);
   const [avatarIsNew, setAvatarIsNew] = useState(false);
+  // Ảnh vừa chọn, đang chờ cắt (null = không mở khung cắt)
+  const [cropSrc, setCropSrc] = useState<string | null>(null);
   const [pickingPhoto, setPickingPhoto] = useState(false);
 
   const [gender, setGender] = useState<Profile["gender"]>(profile.gender);
@@ -111,15 +115,12 @@ export default function OnboardingFlow({
     setPickingPhoto(true);
     try {
       const photo = await Camera.getPhoto({
-        quality: 70,
-        allowEditing: true,
+        quality: 90,
+        allowEditing: false, // app tự mở khung cắt kiểu Facebook (AvatarCropper)
         resultType: CameraResultType.DataUrl,
         source,
       });
-      if (photo.dataUrl) {
-        setAvatarPreview(photo.dataUrl);
-        setAvatarIsNew(true);
-      }
+      if (photo.dataUrl) setCropSrc(photo.dataUrl);
     } catch {
       // Người dùng bấm hủy hộp thoại chọn ảnh/máy ảnh — không phải lỗi thật, bỏ qua.
     } finally {
@@ -309,8 +310,8 @@ export default function OnboardingFlow({
           </p>
 
           <div className="flex flex-col items-center mb-6">
-            <img src={avatarPreview || DEFAULT_AVATAR} alt="avatar preview" width={112} height={112}
-              className="rounded-full object-cover border-4" style={{ borderColor: "#fff", boxShadow: "0 2px 12px rgba(0,0,0,0.08)" }} />
+            <Avatar src={avatarPreview} size={112} className="border-4"
+              style={{ borderColor: "#fff", boxShadow: "0 2px 12px rgba(0,0,0,0.08)" }} />
           </div>
 
           <div className="flex gap-3 mb-2">
@@ -433,6 +434,14 @@ export default function OnboardingFlow({
             {saving ? "Đang xử lý..." : "Bắt đầu khám phá"}
           </button>
         </div>
+      )}
+
+      {cropSrc && (
+        <AvatarCropper
+          src={cropSrc}
+          onCancel={() => setCropSrc(null)}
+          onConfirm={(dataUrl) => { setAvatarPreview(dataUrl); setAvatarIsNew(true); setCropSrc(null); }}
+        />
       )}
     </div>
   );

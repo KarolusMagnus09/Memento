@@ -3,8 +3,10 @@ import type { Screen, Photographer } from "../types";
 import { TEAL, TEAL_MID, TEAL_LIGHT, BG } from "../constants";
 import { Avatar } from "../components/shared/Avatar";
 
-export default function BookingConfirmScreen({ photographer, setScreen, setTab, pkg, price, bookingDate, bookingTime }:
-  { photographer: Photographer; setScreen: (s: Screen) => void; setTab: (t: string) => void; pkg?: string; price?: number; bookingDate?: string; bookingTime?: string }) {
+export default function BookingConfirmScreen({ photographer, setScreen, setTab, pkg, price, bookingDate, bookingTime, onChat }:
+  { photographer: Photographer; setScreen: (s: Screen) => void; setTab: (t: string) => void; pkg?: string; price?: number; bookingDate?: string; bookingTime?: string;
+    /** Mở chat với photographer (App tìm đơn gần nhất rồi mở cuộc trò chuyện) */
+    onChat?: () => void }) {
   const amount = price ?? 150;
   const note = encodeURIComponent(`Booking Memento - ${photographer.name} - ${bookingDate ?? "Oct 9, 2024"}`);
   const momoPhone = "0901234567";
@@ -78,7 +80,7 @@ export default function BookingConfirmScreen({ photographer, setScreen, setTab, 
 
         {/* Secondary actions */}
         <div className="flex gap-3">
-          <button onClick={() => setScreen("chat")}
+          <button onClick={() => (onChat ? onChat() : (setTab("bookings"), setScreen("bookings")))}
             className="flex-1 py-3 rounded-2xl font-bold border-2 flex items-center justify-center gap-1.5 text-sm"
             style={{ borderColor: TEAL, color: TEAL }}>
             <MessageCircle size={16} /> Chat

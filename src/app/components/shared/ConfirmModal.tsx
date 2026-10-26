@@ -21,7 +21,7 @@ export function ConfirmModal({
   // Vuốt/Back: đóng nếu có xử lý bấm nền, nếu không thì chặn (không thoát khỏi hộp thoại xác nhận)
   useBackHandler(true, () => { onBackdropClick?.(); });
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center px-6" style={{ background: "rgba(0,0,0,0.45)" }}
+    <div className="fixed inset-0 z-[130] flex items-center justify-center px-6" style={{ background: "rgba(0,0,0,0.45)" }}
       onClick={onBackdropClick}>
       <div className="w-full max-w-xs bg-white rounded-3xl p-5 shadow-xl" onClick={e => e.stopPropagation()}>
         <h3 className="text-base font-black mb-1.5" style={{ color: TEAL }}>{title}</h3>

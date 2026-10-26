@@ -10,8 +10,13 @@ import { useProfile } from "./hooks/useProfile";
 import { BottomNav } from "./components/shared/BottomNav";
 import { ChatToast } from "./components/shared/ChatToast";
 import { useChatNotifications } from "./hooks/useChatNotifications";
+import { NotifToast } from "./components/shared/NotifToast";
+import { useNotifications } from "./hooks/useNotifications";
+import { registerPush, signOutSafely } from "./lib/pushNotifications";
+import type { AppNotification } from "./lib/notifications";
 import type { ChatTarget } from "./lib/chat";
 import { BackExitHost } from "./components/shared/BackExitHost";
+import { ConfirmModal } from "./components/shared/ConfirmModal";
 
 import LoginScreen from "./screens/LoginScreen";
 import OnboardingFlow from "./screens/onboarding/OnboardingFlow";
@@ -35,8 +40,16 @@ import ContactUsScreen from "./screens/ContactUsScreen";
 import NotificationsScreen from "./screens/NotificationsScreen";
 import AdminReviewScreen from "./screens/AdminReviewScreen";
 import EditPhotographerProfileScreen from "./screens/EditPhotographerProfileScreen";
+import CreatePhotoRequestScreen from "./screens/CreatePhotoRequestScreen";
+import MyRequestsScreen from "./screens/MyRequestsScreen";
+import { offerCanChat, type RequestOffer, type MyOfferItem, type OfferChatTarget } from "./lib/requestOffers";
+import OfferChatScreen from "./screens/OfferChatScreen";
+import { useOfferUnread } from "./hooks/useOfferUnread";
+import type { PhotoRequest } from "./lib/photoRequests";
 
 import { initAnalytics } from "./lib/analytics";
+import { fetchMyBookings } from "./lib/bookings";
+import { openBookingChat, bookingToChatTarget } from "./lib/chat";
 /** Các màn gốc (tab dưới cùng). Back từ đây — hoặc khi vào đây — xoá lịch sử lùi, đích cuối là "home". */
 const ROOT_SCREENS: Screen[] = ["home", "search", "bookings", "messages", "profile"];
 
@@ -84,6 +97,8 @@ function AppInner() {
   const { profile, loading: profileLoading, error: profileError, refresh: refreshProfile } = useProfile(session?.user.id ?? null);
   const { photographers, loading, error, refresh: refreshPhotographers } = usePhotographers();
   const [activePhotographer, setActivePhotographer] = useState<Photographer | null>(null);
+  const [selfBookingNotice, setSelfBookingNotice] = useState(false);
+  const [requestPostedNotice, setRequestPostedNotice] = useState(false);
 
   // Danh sách photographer đã ghim: nạp từ server khi đăng nhập
   useEffect(() => {
@@ -104,10 +119,51 @@ function AppInner() {
     session?.user.id ?? null,
     screen === "chat" && chatTarget ? chatTarget.id : null,
   );
+  // Thông báo hệ thống (đơn hàng, thanh toán...): badge, popup, danh sách trong Tin nhắn
+  const notif = useNotifications(session?.user.id ?? null);
+  // Chấm đỏ tin chat của đề nghị (Trang chủ → Quản lý đơn → Người nhận đơn → Chat)
+  const { unread: offerUnread, refresh: refreshOfferUnread } = useOfferUnread(session?.user.id ?? null);
+  // Vào tab "Lịch hẹn" → coi như đã xem thông báo đơn hàng
+  useEffect(() => {
+    if (screen === "bookings" && notif.unreadBookings > 0) void notif.markRead({ tab: "bookings" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, notif.unreadBookings]);
   const openChat = (t: ChatTarget, from: Screen = "messages") => {
     setChatTarget(t);
     setChatBack(from);
     setScreen("chat");
+  };
+  // Chốt chặn: vào màn chat mà chưa có cuộc trò chuyện nào → về Tin nhắn thay vì để màn hình trắng
+  useEffect(() => {
+    if (screen === "chat" && !chatTarget) {
+      setScreen("messages");
+      setTab("messages");
+    }
+  }, [screen, chatTarget]);
+  /** Chat với photographer từ trang xác nhận đặt lịch: dùng đơn gần nhất (chưa bị từ chối/huỷ) giữa hai bên */
+  const openChatWithPhotographer = async (p: Photographer) => {
+    const uid = session?.user.id;
+    if (!uid) return;
+    const rows = await fetchMyBookings(uid);
+    const b = rows.find(
+      (r) =>
+        r.client_id === uid &&
+        (r.photographer_id === p.id || (!!p.user_id && r.photographer_user_id === p.user_id)) &&
+        r.status !== "rejected" &&
+        r.status !== "cancelled",
+    );
+    if (!b) {
+      setTab("bookings");
+      setScreen("bookings");
+      return;
+    }
+    const r = await openBookingChat(b.id);
+    if (r.error || !r.id) {
+      setTab("bookings");
+      setScreen("bookings");
+      return;
+    }
+    openChat(bookingToChatTarget(b, uid, r.id), "bookings");
   };
   /** Đang xem hồ sơ PTG của chính mình (từ menu Profile) */
   const [viewingOwnProfile, setViewingOwnProfile] = useState(false);
@@ -169,7 +225,28 @@ function AppInner() {
     navigateTo("photographer-profile");
   };
 
-  const showNav = !["login", "chat", "booking-confirm", "personal-info", "change-email", "change-password", "become-photographer", "admin-review", "edit-photographer"].includes(screen);
+  // Quản lý đơn → xem hồ sơ PTG đã nhận đơn
+  const openOfferProfile = (o: RequestOffer) => {
+    const p = photographers.find((x) => x.id === o.photographer_id || (!!x.user_id && x.user_id === o.photographer_user_id));
+    if (!p) return;
+    setViewingOwnProfile(false);
+    setActivePhotographer(p);
+    navigateTo("photographer-profile");
+  };
+  // Quản lý đơn → chat với PTG trước khi chốt (chưa có booking)
+  const [offerChat, setOfferChat] = useState<OfferChatTarget | null>(null);
+  const openOfferChatWith = async (o: RequestOffer, r: PhotoRequest): Promise<string | null> => {
+    setOfferChat({ offerId: o.offer_id, title: r.title, partnerName: o.name, partnerAvatar: o.avatar, canSend: o.status === "pending" || o.status === "chosen" });
+    setScreen("offer-chat");
+    return null;
+  };
+  // PTG (tab "Bình luận của tôi") → chat với chủ đơn
+  const openMyOfferChat = (it: MyOfferItem) => {
+    setOfferChat({ offerId: it.offer_id, title: it.request.title, partnerName: it.request.requester_name, partnerAvatar: null, canSend: offerCanChat(it.status) });
+    setScreen("offer-chat");
+  };
+
+  const showNav = !["login", "chat", "booking-confirm", "personal-info", "change-email", "change-password", "become-photographer", "admin-review", "edit-photographer", "create-request", "offer-chat"].includes(screen);
 
   const navigateTo = (s: Screen) => {
     setScreen(s);
@@ -179,15 +256,35 @@ function AppInner() {
     }
   };
 
+  /** Bấm vào thông báo (popup, danh sách, hoặc push trên điện thoại) → tới màn liên quan */
+  const goToNotificationTab = (tabName: string | undefined) => {
+    navigateTo(tabName === "bookings" ? "bookings" : "messages");
+  };
+  const openNotification = (n: AppNotification) => {
+    void notif.markRead({ ids: [n.id] });
+    notif.dismissToast();
+    if (n.type.startsWith("request_offer") && n.type !== "request_offer_chosen" && n.type !== "request_offer_lost") navigateTo("my-requests");
+    else goToNotificationTab(n.tab);
+  };
+  const goToNotificationTabRef = useRef(goToNotificationTab);
+  goToNotificationTabRef.current = goToNotificationTab;
+  // Đăng ký push điện thoại sau khi đăng nhập (chỉ chạy trong app Android/iOS)
+  useEffect(() => {
+    if (!session?.user.id) return;
+    void registerPush((data) => goToNotificationTabRef.current(data?.tab));
+  }, [session?.user.id]);
+
   // ── Back / vuốt cạnh màn hình ─────────────────────────────────────────
   // Ghi lại các màn đã đi qua để Back lùi từng bước. Vào màn gốc (tab) thì xoá lịch sử;
   // quay lại 1 màn đã có trong lịch sử thì cắt lịch sử tại đó (tránh vòng lặp form ↔ hồ sơ).
   const navStack = useRef<Screen[]>([]);
   const lastScreen = useRef<Screen>(screen);
+  const prevScreenRef = useRef<Screen>(screen);
   const goingBack = useRef(false);
   useEffect(() => {
     const prev = lastScreen.current;
     lastScreen.current = screen;
+    prevScreenRef.current = prev;
     if (prev === screen) return;
     if (goingBack.current) { goingBack.current = false; return; }
     if (ROOT_SCREENS.includes(screen)) { navStack.current = []; return; }
@@ -196,6 +293,19 @@ function AppInner() {
     if (prev !== "login") navStack.current.push(prev);
     if (navStack.current.length > 30) navStack.current.shift();
   }, [screen]);
+
+  // Nhiếp ảnh gia không được tự đặt lịch với chính mình (mọi nút "Đặt lịch" / "Chọn gói này" đều đi qua đây):
+  // quay về màn trước và hiện popup thông báo.
+  const isSelf = (p: Photographer | null) =>
+    !!p && !!session?.user.id && !!p.user_id && p.user_id === session.user.id;
+  useEffect(() => {
+    if (screen === "booking" && isSelf(activePhotographer)) {
+      const back = prevScreenRef.current;
+      setScreen(back && back !== "booking" && back !== "login" ? back : "home");
+      setSelfBookingNotice(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, activePhotographer, session?.user.id]);
 
   // Đã vào app chính (đã đăng nhập, xong onboarding)? Chưa thì để màn Đăng nhập/Onboarding tự xử lý Back.
   const inMainApp = !!session && !isPasswordRecovery && !!profile && !!profile.onboarding_completed;
@@ -281,7 +391,7 @@ function AppInner() {
           Tài khoản của bạn đã bị khóa do vi phạm quy định của Memento.
           {profile.ban_reason ? <><br />Lý do: {profile.ban_reason}</> : null}
         </p>
-        <button type="button" onClick={() => supabase.auth.signOut()}
+        <button type="button" onClick={() => void signOutSafely()}
           className="px-4 py-2 rounded-xl text-sm font-bold text-white" style={{ background: "#0c3d35" }}>
           Đăng xuất
         </button>
@@ -301,7 +411,7 @@ function AppInner() {
   }
 
   // Screens that don't need real photographer data can render immediately.
-  const needsData = !["login", "profile", "personal-info", "privacy", "become-photographer", "contact-us", "notifications", "change-email", "change-password", "admin-review", "messages", "chat"].includes(screen);
+  const needsData = !["login", "profile", "personal-info", "privacy", "become-photographer", "contact-us", "notifications", "change-email", "change-password", "admin-review", "messages", "chat", "create-request", "my-requests", "offer-chat"].includes(screen);
 
   if (needsData && loading) {
     return (
@@ -329,9 +439,9 @@ function AppInner() {
         <div
           ref={scrollRef}
           className="h-full overflow-y-auto overflow-x-hidden no-scrollbar"
-          style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-y", overscrollBehaviorY: "contain" }}
+          style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-x pan-y", overscrollBehaviorY: "contain" }}
         >
-          {screen === "home" && <HomeScreen setScreen={(s) => { setViewingOwnProfile(false); navigateTo(s); }} setPhotographer={(p) => { setViewingOwnProfile(false); setActivePhotographer(p); }} savedIds={savedIds} toggleSave={toggleSave} photographers={photographers} profile={profile} />}
+          {screen === "home" && <HomeScreen offerUnread={offerUnread.total} setScreen={(s) => { setViewingOwnProfile(false); navigateTo(s); }} setPhotographer={(p) => { setViewingOwnProfile(false); setActivePhotographer(p); }} savedIds={savedIds} toggleSave={toggleSave} photographers={photographers} profile={profile} />}
           {screen === "search" && <SearchScreen setScreen={(s) => { setViewingOwnProfile(false); navigateTo(s); }} setPhotographer={(p) => { setViewingOwnProfile(false); setActivePhotographer(p); }} savedIds={savedIds} toggleSave={toggleSave} photographers={photographers} />}
           {screen === "photographer-profile" && activePhotographer && (
             <PhotographerProfileScreen
@@ -347,10 +457,21 @@ function AppInner() {
           )}
           {screen === "write-review" && activePhotographer && <WriteReviewScreen photographer={activePhotographer} setScreen={navigateTo} />}
           {screen === "reviews-list" && activePhotographer && <ReviewsListScreen photographer={activePhotographer} setScreen={navigateTo} />}
-          {screen === "booking" && activePhotographer && <BookingScreen photographer={activePhotographer} setScreen={navigateTo} />}
-          {screen === "booking-confirm" && activePhotographer && <BookingConfirmScreen photographer={activePhotographer} setScreen={navigateTo} setTab={setTab} />}
+          {screen === "booking" && activePhotographer && !isSelf(activePhotographer) && <BookingScreen photographer={activePhotographer} setScreen={navigateTo} />}
+          {screen === "booking-confirm" && activePhotographer && <BookingConfirmScreen photographer={activePhotographer} setScreen={navigateTo} setTab={setTab} onChat={() => void openChatWithPhotographer(activePhotographer)} />}
           {screen === "bookings" && <BookingsScreen setScreen={navigateTo} setPhotographer={setActivePhotographer} photographers={photographers} onOpenChat={(t) => openChat(t, "bookings")} />}
-          {screen === "messages" && <MessagesScreen userId={session.user.id} onOpenChat={openChat} />}
+          {screen === "messages" && (
+            <MessagesScreen
+              userId={session.user.id}
+              onOpenChat={openChat}
+              notifications={notif.items}
+              notifUnread={notif.unreadMessages}
+              chatUnread={unread}
+              onOpenNotification={openNotification}
+              onMarkAllNotifRead={() => void notif.markRead({ tab: "messages" })}
+              onNotifDeleted={() => void notif.refresh()}
+            />
+          )}
           {screen === "chat" && chatTarget && <ChatScreen key={chatTarget.id} target={chatTarget} userId={session.user.id} backTo={chatBack} setScreen={navigateTo} onRead={refreshUnread} />}
           {screen === "profile" && profile && (
             <ProfileScreen
@@ -379,14 +500,46 @@ function AppInner() {
           {screen === "notifications" && <NotificationsScreen setScreen={navigateTo} />}
           {screen === "admin-review" && <AdminReviewScreen setScreen={navigateTo} />}
           {screen === "edit-photographer" && <EditPhotographerProfileScreen setScreen={navigateTo} onSaved={handleProfileSaved} />}
+          {screen === "my-requests" && <MyRequestsScreen setScreen={navigateTo} userId={session.user.id} onOpenProfile={openOfferProfile} onChat={openOfferChatWith}
+            isPhotographer={profile.role === "photographer"} onChatMyOffer={openMyOfferChat} unread={offerUnread} />}
+          {screen === "offer-chat" && offerChat && <OfferChatScreen key={offerChat.offerId} target={offerChat} userId={session.user.id} backTo="my-requests" setScreen={navigateTo} onRead={refreshOfferUnread} />}
+          {screen === "create-request" && (
+            <CreatePhotoRequestScreen
+              setScreen={navigateTo}
+              profile={profile}
+              onCreated={() => { navigateTo("home"); setRequestPostedNotice(true); }}
+            />
+          )}
 
         </div>
 
+        {selfBookingNotice && (
+          <ConfirmModal
+            title="Không thể đặt lịch"
+            message="Bạn không thể tự đặt lịch với chính mình. Hãy chọn một nhiếp ảnh gia khác nhé."
+            actions={[{ label: "Đã hiểu", onClick: () => setSelfBookingNotice(false) }]}
+            onBackdropClick={() => setSelfBookingNotice(false)}
+          />
+        )}
+
+        {requestPostedNotice && (
+          <ConfirmModal
+            title="Đã đăng đơn"
+            message="Đơn của bạn đã hiện trong mục “Tìm kiếm đơn” trên Trang chủ. Nhiếp ảnh gia sẽ thấy và gửi đề nghị chụp cho bạn."
+            actions={[{ label: "Đã hiểu", onClick: () => setRequestPostedNotice(false) }]}
+            onBackdropClick={() => setRequestPostedNotice(false)}
+          />
+        )}
+
         {/* Nằm ngoài vùng cuộn để luôn cố định ở đáy */}
         <div>
-          {showNav && <BottomNav tab={tab} setTab={setTab} setScreen={navigateTo} unread={unread} />}
+          {showNav && <BottomNav tab={tab} setTab={setTab} setScreen={navigateTo} unread={unread + notif.unreadMessages} bookingsUnread={notif.unreadBookings} />}
 
-          {chatToast && screen !== "messages" && (
+          {notif.toast && (
+            <NotifToast toast={notif.toast} onOpen={() => openNotification(notif.toast!)} onClose={notif.dismissToast} />
+          )}
+
+          {chatToast && screen !== "messages" && !notif.toast && (
             <ChatToast
               toast={chatToast}
               onOpen={() => { openChat(chatToast.target, "messages"); setTab("messages"); dismissToast(); }}

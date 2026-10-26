@@ -81,7 +81,7 @@ export const VN_PROVINCES = [
  */
 export const MEMENTO_PAYMENT = {
   bank: "BIDV",
-  account: "7420808992",
+  account: "96247JRBXH224200509",
   accountName: "HOANG VU DAT",
   storeName: "Memento",
   /** Prefix nội dung CK — luôn kèm mã bill ngắn để đối soát */

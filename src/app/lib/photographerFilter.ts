@@ -2,6 +2,7 @@ import type { Photographer } from "../types";
 import { getPriceRange, getLocations } from "./photographerDisplay";
 import { matchesStyle, normStyle } from "./styleFilter";
 import type { StyleCategory } from "../constants";
+import { photographerExtraServices, type ExtraServiceKey } from "./serviceCategories";
 
 /** Bộ lọc nâng cao — dùng chung Trang chủ + Khám phá */
 export type PhotographerFilter = {
@@ -17,6 +18,8 @@ export type PhotographerFilter = {
   pinFirst: boolean;
   /** Thể loại chụp (subcategory labels), rỗng = không lọc */
   shootingStyles: string[];
+  /** Dịch vụ thêm (Make up, Edit/Retouch, Thuê studio, Thuê quần áo, Khác). PTG phải có TẤT CẢ mục đã tick. Rỗng = không lọc */
+  extraServices: ExtraServiceKey[];
 };
 
 export const EMPTY_FILTER: PhotographerFilter = {
@@ -26,6 +29,7 @@ export const EMPTY_FILTER: PhotographerFilter = {
   sort: null,
   pinFirst: true,
   shootingStyles: [],
+  extraServices: [],
 };
 
 export function isFilterActive(f: PhotographerFilter): boolean {
@@ -35,6 +39,7 @@ export function isFilterActive(f: PhotographerFilter): boolean {
     f.priceMax != null ||
     f.sort != null ||
     f.shootingStyles.length > 0 ||
+    (f.extraServices?.length ?? 0) > 0 ||
     !f.pinFirst
   );
 }
@@ -45,6 +50,7 @@ export function countActiveFilters(f: PhotographerFilter): number {
   if (f.priceMin != null || f.priceMax != null) n += 1;
   if (f.sort != null) n += 1;
   if (f.shootingStyles.length) n += 1;
+  if (f.extraServices?.length) n += 1;
   if (!f.pinFirst) n += 1;
   return n;
 }
@@ -58,6 +64,12 @@ function matchesShootingStyles(p: Photographer, selected: string[]): boolean {
   ].filter(Boolean) as string[];
   const keys = new Set(raw.map((s) => normStyle(s)));
   return selected.some((s) => keys.has(normStyle(s)));
+}
+
+function matchesExtraServices(p: Photographer, wanted: ExtraServiceKey[] | undefined): boolean {
+  if (!wanted || !wanted.length) return true;
+  const has = photographerExtraServices(p);
+  return wanted.every((k) => has.has(k));
 }
 
 export function applyPhotographerFilter(
@@ -87,6 +99,7 @@ export function applyPhotographerFilter(
     }
 
     if (!matchesShootingStyles(p, f.shootingStyles)) return false;
+    if (!matchesExtraServices(p, f.extraServices)) return false;
 
     return true;
   });

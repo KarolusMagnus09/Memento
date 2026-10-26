@@ -3,7 +3,9 @@ import type { Screen, Photographer } from "../types";
 import type { Profile } from "../hooks/useProfile";
 import { TEAL, TEAL_MID, TEAL_LIGHT, BG, styles } from "../constants";
 import { StyleFilter } from "../components/shared/StyleFilter";
-import { PhotographerCard } from "../components/shared/PhotographerCard";
+import { FeaturedPhotographerCarousel } from "../components/shared/FeaturedPhotographerCarousel";
+import { PhotoRequestBoard } from "../components/shared/PhotoRequestBoard";
+import { getFeaturedPhotographers } from "../lib/featuredPhotographers";
 import { PhotographerFilterSheet } from "../components/shared/PhotographerFilterSheet";
 import {
   EMPTY_FILTER,
@@ -16,6 +18,7 @@ import { getLocations } from "../lib/photographerDisplay";
 import { useMemo, useState } from "react";
 
 export default function HomeScreen({
+  offerUnread = 0,
   setScreen,
   setPhotographer,
   savedIds,
@@ -29,6 +32,8 @@ export default function HomeScreen({
   toggleSave: (id: number) => void;
   photographers: Photographer[];
   profile: Profile;
+  /** Tin chat đề nghị chưa đọc */
+  offerUnread?: number;
 }) {
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [activeSubcategory, setActiveSubcategory] = useState<string | null>(null);
@@ -59,11 +64,17 @@ export default function HomeScreen({
     [photographers, query, activeGroup, activeSubcategory, filter, savedIds]
   );
 
+  // Mục "nổi bật": top 10 rating cao nhất, đã đủ điều kiện (điều kiện không hiện ra UI)
+  const featuredPhotographers = useMemo(
+    () => getFeaturedPhotographers(filteredPhotographers),
+    [filteredPhotographers]
+  );
+
   const filterOn = isFilterActive(filter);
   const filterCount = countActiveFilters(filter);
 
   return (
-    <div className="flex flex-col min-h-full pb-20" style={{ background: BG }}>
+    <div className="flex flex-col min-h-full" style={{ background: BG, paddingBottom: "calc(88px + env(safe-area-inset-bottom))" }}>
       {/* Hero Header */}
       <div
         className="rounded-b-3xl px-5 pt-9 pb-5 relative overflow-hidden"
@@ -158,32 +169,33 @@ export default function HomeScreen({
           </button>
         </div>
         <p className="text-xs font-semibold mb-3" style={{ color: TEAL_LIGHT }}>
-          {filteredPhotographers.length} photographer đã được tìm thấy
+          {featuredPhotographers.length} photographer đã được tìm thấy
         </p>
 
-        <div className="flex flex-col gap-4 pb-4">
-          {filteredPhotographers.length === 0 && (
+        <div className="pb-4">
+          {featuredPhotographers.length === 0 ? (
             <p className="text-center text-xs text-muted-foreground py-8">
-              Chưa có nhiếp ảnh gia nào ở mục này.
+              Chưa có nhiếp ảnh gia nổi bật nào ở mục này.
             </p>
-          )}
-          {filteredPhotographers.map((p) => (
-            <PhotographerCard
-              key={p.id}
-              p={p}
-              saved={savedIds.some((x) => Number(x) === Number(p.id))}
-              onToggleSave={() => toggleSave(Number(p.id))}
-              onProfile={() => {
+          ) : (
+            <FeaturedPhotographerCarousel
+              photographers={featuredPhotographers}
+              onProfile={(p) => {
                 setPhotographer(p);
                 setScreen("photographer-profile");
               }}
-              onBook={() => {
-                setPhotographer(p);
-                setScreen("booking");
-              }}
             />
-          ))}
+          )}
         </div>
+
+        {/* Tìm kiếm đơn: khách đăng yêu cầu thuê nhiếp ảnh gia */}
+        <PhotoRequestBoard
+          onCreate={() => setScreen("create-request")}
+          onManage={() => setScreen("my-requests")}
+          currentUserId={profile?.id ?? null}
+          isPhotographer={profile?.role === "photographer"}
+          manageBadge={offerUnread}
+        />
       </div>
 
       <PhotographerFilterSheet

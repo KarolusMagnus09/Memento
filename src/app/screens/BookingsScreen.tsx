@@ -2,11 +2,13 @@ import { useBackHandler } from "../lib/backNavigation";
 import {
   Calendar, MessageCircle, Clock, Check, X, QrCode, ChevronRight, ArrowLeft, Flag,
   SlidersHorizontal, ChevronLeft, Flag as FlagIcon, Briefcase, Hash, Wallet, StickyNote, Tag, User as UserIcon,
+  Loader2, CheckCircle2,
 } from "lucide-react";
 import type { Screen, Photographer } from "../types";
 import { TEAL, TEAL_MID, TEAL_LIGHT, BG, MEMENTO_PAYMENT } from "../constants";
 import { Avatar } from "../components/shared/Avatar";
 import { HandoverPanel } from "../components/shared/HandoverPanel";
+import { ConfirmModal } from "../components/shared/ConfirmModal";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { supabase } from "../lib/supabase";
@@ -15,8 +17,6 @@ import {
   buildServiceOptions,
   formatVnd,
   updateBookingStatus,
-  reportUserTransfer,
-  isUserTransferReported,
   markBookingPaid,
   markDepositPaid,
   markFinalPaid,
@@ -43,6 +43,10 @@ import {
   bothSuccessConfirmed,
   bookingPhaseLabel,
   confirmOrderSuccess,
+  confirmShoot,
+  flowStep,
+  silenceInfo,
+  SILENCE_HOURS,
   getDepositAmount,
   getRemainingAmount,
   calcCommission,
@@ -54,6 +58,8 @@ import {
   type BookingStatus,
   type PhotoFeedback,
 } from "../lib/bookings";
+import { openBookingChat, bookingToChatTarget, type ChatTarget } from "../lib/chat";
+import { normalizeCategory } from "../lib/serviceCategories";
 
 const FILTERS = [
   { id: "all", label: "Tất cả" },
@@ -66,7 +72,7 @@ const FILTERS = [
 ] as const;
 
 type SortId = "nearest" | "price_desc" | "price_asc";
-type CatId = "rental" | "makeup";
+type CatId = "rental_studio" | "rental_outfit" | "makeup";
 
 const SORTS: { id: SortId; label: string }[] = [
   { id: "nearest", label: "Lịch chụp gần nhất" },
@@ -74,7 +80,8 @@ const SORTS: { id: SortId; label: string }[] = [
   { id: "price_asc", label: "Giá thấp → cao" },
 ];
 const CATS: { id: CatId; label: string }[] = [
-  { id: "rental", label: "Thuê & phụ kiện" },
+  { id: "rental_studio", label: "Thuê studio" },
+  { id: "rental_outfit", label: "Thuê quần áo" },
   { id: "makeup", label: "Makeup" },
 ];
 
@@ -434,7 +441,8 @@ type PartyInfo = {
 };
 
 const REPORT_REASONS = ["Spam / quảng cáo", "Lừa đảo", "Hành vi không phù hợp", "Thông tin giả mạo", "Khác"];
-const PRICE_REPORT_REASONS = ["Giá không đúng", "Dịch vụ không khớp", "Bị tính thêm phí", "Thanh toán có vấn đề", "Khác"];
+const SILENT_REASON = "Bên kia không phản hồi";
+const PRICE_REPORT_REASONS = ["Giá không đúng", "Dịch vụ không khớp", "Bị tính thêm phí", "Thanh toán có vấn đề", SILENT_REASON, "Khác"];
 
 type ReportCtx = { kind: "profile" | "price"; booking: BookingRow };
 
@@ -456,10 +464,13 @@ export default function BookingsScreen({
   setScreen,
   setPhotographer,
   photographers,
+  onOpenChat,
 }: {
   setScreen: (s: Screen) => void;
   setPhotographer: (p: Photographer) => void;
   photographers: Photographer[];
+  /** Mở cuộc trò chuyện của một đơn (App gắn target rồi chuyển sang màn chat) */
+  onOpenChat: (target: ChatTarget) => void;
 }) {
   const [rows, setRows] = useState<BookingRow[]>([]);
   const [userId, setUserId] = useState<string | null>(null);
@@ -473,7 +484,10 @@ export default function BookingsScreen({
   const [payBooking, setPayBooking] = useState<BookingRow | null>(null);
   /** deposit = cọc 10%, final = thanh toán 90% */
   const [payMode, setPayMode] = useState<"deposit" | "final">("deposit");
-  const [reportBusy, setReportBusy] = useState(false);
+  /** Kiểm tra thanh toán SePay trong modal QR */
+  const [payCheck, setPayCheck] = useState<"idle" | "checking" | "paid" | "notyet">("idle");
+  const payCheckRun = useRef(0);
+  const paidTimer = useRef<number | null>(null);
   const [driveDraft, setDriveDraft] = useState("");
   const [feedbackNote, setFeedbackNote] = useState("");
   const [feedbackLabel, setFeedbackLabel] = useState("");
@@ -492,6 +506,9 @@ export default function BookingsScreen({
   const [reportText, setReportText] = useState("");
   const [reportSending, setReportSending] = useState(false);
   const [reportMsg, setReportMsg] = useState<string | null>(null);
+  /** Popup xác nhận buổi chụp xong (2 bên) */
+  const [shootAsk, setShootAsk] = useState<BookingRow | null>(null);
+  const [shootBusy, setShootBusy] = useState(false);
 
   // Vuốt/Back: đóng popup/trang chi tiết đang mở trước (cái mở sau đóng trước)
   useBackHandler(!!detail, () => setDetail(null));
@@ -591,7 +608,7 @@ export default function BookingsScreen({
     });
 
     if (cats.length > 0) {
-      list = list.filter((b) => cats.includes((b.package_category || "photo").toLowerCase() as CatId));
+      list = list.filter((b) => cats.includes(normalizeCategory(b.package_category) as CatId));
     }
 
     if (rangeFrom) list = list.filter((b) => b.booking_date >= rangeFrom);
@@ -661,7 +678,57 @@ export default function BookingsScreen({
     });
   }
 
-  // Poll khi mở QR — đóng khi đúng phase đã thanh toán
+  // Đã nhận tiền (SePay → webhook đã đổi trạng thái đơn) theo đúng phase đang thanh toán
+  function isPaidForMode(row: BookingRow, mode: "deposit" | "final"): boolean {
+    const depositOk = mode === "deposit" && (row.status === "deposit_paid" || row.status === "paid" || !!row.deposit_paid_at || row.status === "handover" || row.status === "final_payment" || row.status === "completed");
+    const finalOk = mode === "final" && (row.status === "completed" || row.payment_status === "fully_paid");
+    return depositOk || finalOk;
+  }
+
+  // Báo thanh toán thành công, giữ thông báo ~2 giây rồi đóng modal và tải lại danh sách
+  function onPaymentConfirmed(mode: "deposit" | "final") {
+    setPayCheck("paid");
+    if (paidTimer.current) return;
+    paidTimer.current = window.setTimeout(() => {
+      paidTimer.current = null;
+      setPayBooking(null);
+      setPayBank(null);
+      setToast(mode === "deposit" ? "Thanh toán thành công, buổi chụp sẽ diễn ra theo lịch" : "Đã hoàn tất");
+      reload();
+    }, 2200);
+  }
+
+  // Nút "Kiểm tra thanh toán": hỏi lại đơn tối đa ~10 giây (5 lần, cách nhau 2,5 giây); chưa thấy thì báo chưa nhận
+  async function checkPayment() {
+    if (!payBooking || payCheck === "checking" || payCheck === "paid") return;
+    const run = ++payCheckRun.current;
+    const id = payBooking.id;
+    const mode = payMode;
+    setPayCheck("checking");
+    for (let i = 0; i < 5; i++) {
+      const { data } = await supabase.from("bookings").select("*").eq("id", id).maybeSingle();
+      if (run !== payCheckRun.current) return; // đã đóng modal hoặc bấm kiểm tra lại
+      if (data && isPaidForMode(data as BookingRow, mode)) {
+        onPaymentConfirmed(mode);
+        return;
+      }
+      if (i < 4) await new Promise((r) => setTimeout(r, 2500));
+      if (run !== payCheckRun.current) return;
+    }
+    setPayCheck("notyet");
+  }
+
+  // Đóng modal → huỷ kiểm tra đang chạy, đưa trạng thái về ban đầu
+  useEffect(() => {
+    if (!payBooking) {
+      payCheckRun.current++;
+      setPayCheck("idle");
+    }
+  }, [payBooking]);
+
+  useEffect(() => () => { if (paidTimer.current) window.clearTimeout(paidTimer.current); }, []);
+
+  // Tự kiểm tra nền mỗi 4 giây khi mở QR: có tiền thì hiện "thanh toán thành công" luôn
   useEffect(() => {
     if (!payBooking) return;
     const id = payBooking.id;
@@ -670,15 +737,7 @@ export default function BookingsScreen({
       if (!userId) return;
       const list = await fetchMyBookings(userId);
       const row = list.find((x) => x.id === id);
-      if (!row) return;
-      const depositOk = mode === "deposit" && (row.status === "deposit_paid" || row.status === "paid" || row.deposit_paid_at || row.status === "handover" || row.status === "final_payment" || row.status === "completed");
-      const finalOk = mode === "final" && (row.status === "completed" || row.payment_status === "fully_paid");
-      if (depositOk || finalOk) {
-        setPayBooking(null);
-        setPayBank(null);
-        setToast(mode === "deposit" ? "Đã nhận thanh toán, buổi chụp sẽ diễn ra theo lịch" : "Đã hoàn tất");
-        reload();
-      }
+      if (row && isPaidForMode(row, mode)) onPaymentConfirmed(mode);
     }, 4000);
     return () => clearInterval(timer);
   }, [payBooking?.id, payMode, userId, reload]);
@@ -694,8 +753,14 @@ export default function BookingsScreen({
     }
   }
 
-  function goChat(_b: BookingRow) {
-    setScreen("chat");
+  /** Trước đây chỉ gọi setScreen("chat") mà không có cuộc trò chuyện → màn hình trắng */
+  async function goChat(b: BookingRow) {
+    const r = await openBookingChat(b.id);
+    if (r.error || !r.id) {
+      setToast(r.error || "Chưa mở được cuộc trò chuyện, bạn thử lại nhé");
+      return;
+    }
+    onOpenChat(bookingToChatTarget(b, userId, r.id));
   }
 
   const payAmount = payBooking
@@ -755,6 +820,18 @@ export default function BookingsScreen({
     setClientView(null);
     setReportCtx(null);
     setReportMsg(null);
+  }
+
+  async function doConfirmShoot() {
+    if (!shootAsk) return;
+    const id = shootAsk.id;
+    setShootBusy(true);
+    const err = await confirmShoot(id);
+    setShootBusy(false);
+    setShootAsk(null);
+    if (err) setToast(err);
+    else setToast("Đã xác nhận buổi chụp");
+    await reload();
   }
 
   async function sendReport() {
@@ -907,6 +984,13 @@ export default function BookingsScreen({
               const awaiting = awaitingDeposit || awaitingFinal;
               const shooting = isShooting(b);
               const handover = isHandover(b);
+              const step = flowStep(b);
+              const sil = silenceInfo(b);
+              const iAmWaiting =
+                !!sil && sil.overdue && ((sil.waitingOn === "ptg" && isClient) || (sil.waitingOn === "client" && isPtg));
+              const otherName = isPtg ? b.client_name || "Khách hàng" : b.photographer_name || "Photographer";
+              const myShootOk = isPtg ? !!b.shoot_confirm_ptg_at : !!b.shoot_confirm_client_at;
+              const otherShootOk = isPtg ? !!b.shoot_confirm_client_at : !!b.shoot_confirm_ptg_at;
               const color = statusColor(b);
               const bordered = b.status === "rejected" || b.status === "pending" || awaiting || isPaid(b);
               const displayName = isPtg
@@ -934,20 +1018,42 @@ export default function BookingsScreen({
                         : `💳 Hãy thanh toán ${formatVnd(getDepositAmount(b))} để giữ lịch nhé.`}
                     </div>
                   )}
-                  {shooting && (
+                  {step === "wait_date" && (
                     <div
                       className="mx-3 mt-3 px-3 py-2 rounded-xl text-xs font-semibold"
                       style={{ background: "#ECFDF5", color: "#065f46", border: "1px solid #A7F3D0" }}
                     >
-                      {isPtg ? (
-                        b.shoot_done_at ? (
-                          <>📤 Đã ghi nhận chụp xong. Hãy nộp link album ảnh cho khách duyệt.</>
-                        ) : (
-                          <>📷 Đang chụp ảnh. Khi xong, bấm «Đã chụp xong» bên dưới.</>
-                        )
-                      ) : (
-                        <>📷 Đang trong quá trình chụp ảnh. Khi photographer nộp album, bạn sẽ được xem và góp ý.</>
-                      )}
+                      📷 Đang trong quá trình chụp ảnh.
+                    </div>
+                  )}
+                  {step === "shoot_confirm" && (
+                    <div
+                      className="mx-3 mt-3 px-3 py-2 rounded-xl text-xs font-semibold"
+                      style={{ background: "#ECFDF5", color: "#065f46", border: "1px solid #A7F3D0" }}
+                    >
+                      {myShootOk
+                        ? `✓ Bạn đã xác nhận buổi chụp — đang chờ ${otherName} xác nhận.`
+                        : otherShootOk
+                          ? `🔔 ${otherName} đã xác nhận buổi chụp, đang chờ bạn. Bấm xác nhận bên dưới nếu buổi chụp đã xong.`
+                          : "📷 Đã đến ngày chụp. Khi buổi chụp hoàn tất, cả hai bên cùng bấm xác nhận bên dưới."}
+                    </div>
+                  )}
+                  {step === "drive" && (
+                    <div
+                      className="mx-3 mt-3 px-3 py-2 rounded-xl text-xs font-semibold"
+                      style={{ background: "#FFF8E7", color: "#92400e", border: "1px solid #FDE68A" }}
+                    >
+                      {isPtg
+                        ? "📤 Cả hai đã xác nhận buổi chụp. Hãy gửi link Google Drive ảnh cho khách."
+                        : "⏳ Đã xác nhận buổi chụp. Đang đợi photographer gửi ảnh."}
+                    </div>
+                  )}
+                  {step === "closing" && (
+                    <div
+                      className="mx-3 mt-3 px-3 py-2 rounded-xl text-xs font-semibold"
+                      style={{ background: "#ECFDF5", color: "#065f46", border: "1px solid #A7F3D0" }}
+                    >
+                      ✅ Cả hai đã xác nhận hoàn tất. Memento đang xử lý thanh toán và sẽ gửi ảnh hoàn chỉnh cho khách.
                     </div>
                   )}
                   {handover && (
@@ -963,7 +1069,7 @@ export default function BookingsScreen({
 
                   <div className="px-4 pt-3 pb-2">
                     <span className="text-sm font-bold" style={{ color: TEAL }}>
-                      Lịch hẹn <span className="font-mono">#{buildBillCode(b.id, MEMENTO_PAYMENT.desPrefix || "MMT")}</span>
+                      Lịch hẹn
                     </span>
                   </div>
 
@@ -1077,17 +1183,7 @@ export default function BookingsScreen({
                     )}
 
                     {/* Client: thanh toán khi chờ pay */}
-                    {isClient && awaitingDeposit && isUserTransferReported(b) && (
-                      <div
-                        className="w-full mt-2 py-3 px-3 rounded-xl text-xs font-semibold leading-relaxed"
-                        style={{ background: "#FEF3C7", color: "#92400e", border: "1px solid #FCD34D" }}
-                      >
-                        Đã báo chuyển khoản. Đang chờ Memento xác nhận.
-                        <br />
-                        <span className="font-normal">Nếu admin chưa nhận được tiền, QR sẽ được mở lại và bạn sẽ thấy nút thanh toán trở lại.</span>
-                      </div>
-                    )}
-                    {isClient && awaitingDeposit && !isUserTransferReported(b) && (
+                    {isClient && awaitingDeposit && (
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); openPayment(b, "deposit"); }}
@@ -1098,28 +1194,21 @@ export default function BookingsScreen({
                       </button>
                     )}
                     
-                    {isPtg && (shooting || isActiveOrder(b)) && !b.shoot_done_at && !b.drive_url && (
+                    {/* Bước 2–3: đến ngày chụp → mỗi bên 1 nút «Xác nhận đơn thành công» */}
+                    {(isClient || isPtg) && step === "shoot_confirm" && !myShootOk && (
                       <button
                         type="button"
                         disabled={actingId === b.id}
-                        onClick={async () => {
-                          setActingId(b.id);
-                          const err = await markShootDone(b.id);
-                          setActingId(null);
-                          if (err) setToast(err);
-                          else { setToast("Đã ghi nhận chụp xong — hãy gửi link Drive để sang bước bàn giao"); reload(); }
-                        }}
+                        onClick={() => setShootAsk(b)}
                         className="w-full mt-2 py-3 rounded-xl text-sm font-bold text-white"
                         style={{ background: TEAL }}
                       >
-                        Đã chụp xong (tiếp theo: gửi Drive)
+                        Xác nhận đơn thành công
                       </button>
                     )}
-                    {/* PTG phase:
-                        1) Đang chụp: chỉ nút «Đã chụp xong»
-                        2) Đã chụp xong / bàn giao: form nộp link + xử lý note khách
-                        Client: chỉ khi đã có Drive */}
-                    {isPtg && (b.shoot_done_at || handover || !!b.drive_url) && (
+
+                    {/* Bước 4: chỉ PTG có form gửi Drive (khách thấy chữ vàng ở trên) */}
+                    {isPtg && step === "drive" && (
                       <HandoverPanel
                         booking={b}
                         role="ptg"
@@ -1129,7 +1218,19 @@ export default function BookingsScreen({
                         notify={setToast}
                       />
                     )}
-                    {isClient && handover && (
+
+                    {/* Bước 5–6: đã có Drive → khách góp ý, 2 bên xác nhận hoàn tất */}
+                    {step === "review" && isPtg && (
+                      <HandoverPanel
+                        booking={b}
+                        role="ptg"
+                        userId={userId}
+                        accent={TEAL}
+                        onChanged={reload}
+                        notify={setToast}
+                      />
+                    )}
+                    {step === "review" && isClient && (
                       <HandoverPanel
                         booking={b}
                         role="client"
@@ -1140,6 +1241,16 @@ export default function BookingsScreen({
                       />
                     )}
 
+                    {/* Bên kia im lặng quá hạn → gợi ý báo cáo cho admin */}
+                    {iAmWaiting && (
+                      <div
+                        className="mt-2 rounded-xl px-3 py-2 text-[11px] leading-relaxed"
+                        style={{ background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}
+                      >
+                        ⚠️ {otherName} chưa phản hồi hơn {SILENCE_HOURS} giờ. Bạn có thể gửi báo cáo để admin xử lý.
+                      </div>
+                    )}
+
                     {/* Report trong suốt quá trình chụp / bàn giao */}
                     {(isClient || isPtg) && (shooting || handover || isProcessing(b)) && b.status !== "completed" && b.status !== "cancelled" && b.status !== "rejected" && (
                       <button
@@ -1148,7 +1259,7 @@ export default function BookingsScreen({
                           e.stopPropagation();
                           setReportCtx({ kind: "price", booking: b });
                           setReportMsg(null);
-                          setReportReason(PRICE_REPORT_REASONS[0]);
+                          setReportReason(iAmWaiting ? SILENT_REASON : PRICE_REPORT_REASONS[0]);
                           setReportText("");
                         }}
                         className="w-full mt-2 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 border"
@@ -1190,33 +1301,6 @@ export default function BookingsScreen({
                     )}
 
 
-                    {isPtg && (b.status === "handover" || b.status === "closing" || !!b.drive_url || isShooting(b)) && !b.ptg_success_at && (
-                      <button
-                        type="button"
-                        disabled={actingId === b.id}
-                        onClick={async () => {
-                          if (!b.drive_url) {
-                            setToast("Bạn chưa gửi link Drive nào. Hãy dán và gửi album ảnh demo trước khi hoàn tất đơn.");
-                            return;
-                          }
-                          setActingId(b.id);
-                          const err = await confirmOrderSuccess(b.id, "ptg");
-                          setActingId(null);
-                          if (err) setToast(err);
-                          else { setToast("Đã xác nhận hoàn tất từ photographer"); reload(); }
-                        }}
-                        className="w-full mt-2 py-3 rounded-xl text-sm font-bold text-white"
-                        style={{ background: TEAL }}
-                      >
-                        Xác nhận hoàn tất đơn
-                      </button>
-                    )}
-                    {isPtg && b.ptg_success_at && (
-                      <p className="text-xs mt-2 text-center" style={{ color: GREEN }}>✓ Bạn đã xác nhận hoàn tất</p>
-                    )}
-                    {isClient && b.client_success_at && !bothSuccessConfirmed(b) && (
-                      <p className="text-xs mt-2 text-center" style={{ color: GREEN }}>✓ Bạn đã xác nhận — chờ photographer</p>
-                    )}
                     {(b.status === "handover" || b.status === "closing") && (
                       <div className="mt-2 text-[11px] text-center text-muted-foreground">
                         Khách: {b.client_success_at ? "✓" : "…"} · PTG: {b.ptg_success_at ? "✓" : "…"}
@@ -1348,9 +1432,6 @@ export default function BookingsScreen({
               </button>
               <div className="min-w-0">
                 <h3 className="font-bold text-base text-white">Chi tiết lịch hẹn</h3>
-                <p className="text-white/80 text-xs font-mono">
-                  #{buildBillCode(detail.id, MEMENTO_PAYMENT.desPrefix || "MMT")}
-                </p>
               </div>
             </div>
 
@@ -1393,6 +1474,7 @@ export default function BookingsScreen({
               </button>
 
               <div className="bg-white rounded-2xl px-4 divide-y divide-border">
+                <DetailRow icon={<Hash size={15} />} label="Mã đơn" value={buildBillCode(detail.id, MEMENTO_PAYMENT.desPrefix || "MMT")} strong />
                 <DetailRow icon={<Briefcase size={15} />} label="Gói dịch vụ" value={detail.package_name} />
                 <DetailRow icon={<Tag size={15} />} label="Loại dịch vụ" value={categoryLabel(detail.package_category || "photo")} />
                 <DetailRow icon={<Calendar size={15} />} label="Ngày" value={fmtDateVi(detail.booking_date)} />
@@ -1401,11 +1483,11 @@ export default function BookingsScreen({
                 {detail.ptg_note && (
                   <DetailRow icon={<StickyNote size={15} />} label="Ghi chú photographer" value={detail.ptg_note} scroll />
                 )}
-                {isPaid(detail) && detail.payment_ref && (
+                {isPaid(detail) && detail.paid_at && (
                   <DetailRow
-                    icon={<Hash size={15} />}
-                    label="Mã lịch hẹn"
-                    value={`${detail.payment_ref}${detail.paid_at ? `\n${new Date(detail.paid_at).toLocaleString("vi-VN")}` : ""}`}
+                    icon={<Clock size={15} />}
+                    label="Đã thanh toán lúc"
+                    value={new Date(detail.paid_at).toLocaleString("vi-VN")}
                   />
                 )}
                 <div className="py-3">
@@ -1562,6 +1644,26 @@ export default function BookingsScreen({
         </div>
       )}
 
+      {/* Popup xác nhận buổi chụp xong */}
+      {shootAsk && (
+        <ConfirmModal
+          title="Xác nhận buổi chụp thành công?"
+          message={(() => {
+            const asPtg = userId === shootAsk.photographer_user_id;
+            const other = asPtg ? shootAsk.client_name || "Khách hàng" : shootAsk.photographer_name || "Photographer";
+            const otherOk = asPtg ? !!shootAsk.shoot_confirm_client_at : !!shootAsk.shoot_confirm_ptg_at;
+            return otherOk
+              ? `${other} đã xác nhận. Bạn xác nhận để sang bước gửi ảnh.`
+              : `Cần cả hai bên xác nhận. Bạn bấm trước thì sẽ chờ ${other} xác nhận, và ${other} sẽ nhận thông báo.`;
+          })()}
+          onBackdropClick={() => setShootAsk(null)}
+          actions={[
+            { label: shootBusy ? "Đang gửi..." : "Xác nhận", onClick: doConfirmShoot },
+            { label: "Chưa xong", variant: "secondary", onClick: () => setShootAsk(null) },
+          ]}
+        />
+      )}
+
       {/* Popup báo cáo profile */}
       {reportCtx && (
         <div
@@ -1636,7 +1738,7 @@ export default function BookingsScreen({
               <img
                 src={qrUrl}
                 alt="VietQR"
-                className="w-52 h-52 rounded-2xl border border-border bg-white"
+                className="w-56 h-56 object-contain rounded-2xl border border-border bg-white"
               />
             </div>
             <div className="text-xs space-y-1 mb-3 bg-muted/50 rounded-xl p-3">
@@ -1664,34 +1766,36 @@ export default function BookingsScreen({
                 Bạn giữ nguyên nội dung này để hệ thống nhận đúng khoản thanh toán nhé.
               </p>
             </div>
-            <p className="text-[11px] text-amber-900 bg-amber-50 rounded-lg px-2 py-1.5 mb-3 leading-relaxed">
-              {payMode === "deposit"
-                ? "Memento sẽ giữ khoản tiền này an toàn, ứng trước 20% cho photographer, phần còn lại được chuyển khi lịch hẹn hoàn tất."
-                : "Thanh toán cho lịch hẹn."}
-              {" "}Sau khi chuyển khoản, bấm «Tôi đã chuyển tiền» để báo admin kiểm tra.
-            </p>
+            {payCheck === "checking" ? (
+              <div className="flex items-center justify-center gap-2 text-xs font-semibold text-amber-900 bg-amber-50 rounded-lg px-2 py-3 mb-3">
+                <Loader2 size={16} className="animate-spin" /> Đang tải, vui lòng đợi…
+              </div>
+            ) : payCheck === "paid" ? (
+              <div className="flex items-center justify-center gap-2 text-xs font-bold text-green-800 bg-green-50 rounded-lg px-2 py-3 mb-3">
+                <CheckCircle2 size={18} /> Thanh toán thành công! Đơn của bạn đã được xác nhận.
+              </div>
+            ) : (
+              <p className="text-[11px] text-amber-900 bg-amber-50 rounded-lg px-2 py-1.5 mb-3 leading-relaxed">
+                {payMode === "deposit"
+                  ? "Memento sẽ giữ khoản tiền này an toàn, ứng trước 20% cho photographer, phần còn lại được chuyển khi lịch hẹn hoàn tất."
+                  : "Thanh toán cho lịch hẹn."}
+                {" "}Sau khi chuyển khoản, bấm «Kiểm tra thanh toán» để hệ thống xác nhận.
+              </p>
+            )}
             <div className="flex flex-col gap-2 mb-1">
+              {payCheck === "notyet" && (
+                <p className="text-xs font-semibold text-red-600 text-center leading-relaxed">
+                  Hệ thống chưa nhận được khoản chuyển khoản. Nếu bạn vừa chuyển, hãy đợi vài giây rồi bấm kiểm tra lại nhé.
+                </p>
+              )}
               <button
                 type="button"
-                disabled={reportBusy}
-                onClick={async () => {
-                  if (!payBooking) return;
-                  setReportBusy(true);
-                  const err = await reportUserTransfer(payBooking.id);
-                  setReportBusy(false);
-                  if (err) {
-                    setToast(err);
-                    return;
-                  }
-                  setPayBooking(null);
-                  setPayBank(null);
-                  setToast("Đã báo admin. Chúng tôi sẽ kiểm tra và xác nhận sớm.");
-                  reload();
-                }}
-                className="w-full py-2.5 rounded-2xl font-bold text-sm text-white"
-                style={{ background: "#f59e0b" }}
+                disabled={payCheck === "checking" || payCheck === "paid"}
+                onClick={checkPayment}
+                className="w-full py-2.5 rounded-2xl font-bold text-sm text-white disabled:opacity-80"
+                style={{ background: payCheck === "paid" ? "#16a34a" : "#f59e0b" }}
               >
-                {reportBusy ? "Đang gửi…" : "Tôi đã chuyển tiền"}
+                {payCheck === "checking" ? "Đang kiểm tra…" : payCheck === "paid" ? "Đã thanh toán" : payCheck === "notyet" ? "Kiểm tra lại" : "Kiểm tra thanh toán"}
               </button>
               <button
                 type="button"
