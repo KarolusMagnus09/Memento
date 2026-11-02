@@ -1,19 +1,13 @@
 import { Search, Award, SlidersHorizontal } from "lucide-react";
 import type { Screen, Photographer } from "../types";
 import type { Profile } from "../hooks/useProfile";
-import { TEAL, TEAL_MID, TEAL_LIGHT, BG, styles } from "../constants";
-import { StyleFilter } from "../components/shared/StyleFilter";
+import { TEAL, TEAL_MID, TEAL_LIGHT, BG } from "../constants";
 import { FeaturedPhotographerCarousel } from "../components/shared/FeaturedPhotographerCarousel";
 import { PhotoRequestBoard } from "../components/shared/PhotoRequestBoard";
 import { getFeaturedPhotographers } from "../lib/featuredPhotographers";
 import { PhotographerFilterSheet } from "../components/shared/PhotographerFilterSheet";
-import {
-  EMPTY_FILTER,
-  type PhotographerFilter,
-  filterPhotographers,
-  isFilterActive,
-  countActiveFilters,
-} from "../lib/photographerFilter";
+import { isFilterActive, countActiveFilters } from "../lib/photographerFilter";
+import { setDiscover, useDiscover } from "../lib/discoverState";
 import { getLocations } from "../lib/photographerDisplay";
 import { useMemo, useState } from "react";
 
@@ -35,13 +29,10 @@ export default function HomeScreen({
   /** Tin chat đề nghị chưa đọc */
   offerUnread?: number;
 }) {
-  const [activeCategory, setActiveCategory] = useState<string | null>(null);
-  const [activeSubcategory, setActiveSubcategory] = useState<string | null>(null);
+  // Ô tìm + bộ lọc ở Trang chủ chỉ để chuyển sang Khám phá (state dùng chung, được lưu lại)
+  const discover = useDiscover();
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<PhotographerFilter>(EMPTY_FILTER);
   const [filterOpen, setFilterOpen] = useState(false);
-
-  const activeGroup = styles.find((s) => s.label === activeCategory) ?? null;
 
   const availableLocations = useMemo(() => {
     const set = new Set<string>();
@@ -51,24 +42,19 @@ export default function HomeScreen({
     return Array.from(set);
   }, [photographers]);
 
-  const filteredPhotographers = useMemo(
-    () =>
-      filterPhotographers({
-        list: photographers,
-        query,
-        styleGroup: activeGroup,
-        subcategory: activeSubcategory,
-        filter,
-        savedIds,
-      }),
-    [photographers, query, activeGroup, activeSubcategory, filter, savedIds]
+  // Mục "nổi bật": top 10 rating cao nhất, đã đủ điều kiện — KHÔNG bị ảnh hưởng bởi ô tìm / bộ lọc
+  const featuredPhotographers = useMemo(
+    () => getFeaturedPhotographers(photographers),
+    [photographers]
   );
 
-  // Mục "nổi bật": top 10 rating cao nhất, đã đủ điều kiện (điều kiện không hiện ra UI)
-  const featuredPhotographers = useMemo(
-    () => getFeaturedPhotographers(filteredPhotographers),
-    [filteredPhotographers]
-  );
+  const filter = discover.filter;
+  /** Gõ tên + Enter / bấm kính lúp → sang Khám phá, mang theo bộ lọc đã chọn */
+  function goSearch() {
+    setDiscover({ query: query.trim() });
+    setQuery("");
+    setScreen("search");
+  }
 
   const filterOn = isFilterActive(filter);
   const filterCount = countActiveFilters(filter);
@@ -87,14 +73,24 @@ export default function HomeScreen({
           hoàn hảo cho bạn
         </h2>
         <p className="text-white/70 text-xs mb-4">Kết nối cảm xúc qua từng khoảnh khắc</p>
-        <div className="flex items-center gap-2 bg-white rounded-2xl px-4 py-3 shadow-md">
-          <Search size={16} className="text-muted-foreground" />
+        <form
+          role="search"
+          onSubmit={(e) => {
+            e.preventDefault();
+            goSearch();
+          }}
+          className="flex items-center gap-2 bg-white rounded-2xl px-4 py-3 shadow-md"
+        >
+          <button type="submit" aria-label="Tìm kiếm" className="flex-shrink-0">
+            <Search size={16} className="text-muted-foreground" />
+          </button>
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="flex-1 bg-transparent text-sm outline-none text-foreground"
-            placeholder="Tìm kiếm phong cách, địa điểm..."
-          />   {/* ← thiếu dòng này */}
+            enterKeyHint="search"
+            className="flex-1 min-w-0 bg-transparent text-sm outline-none text-foreground"
+            placeholder="Tìm nhiếp ảnh gia theo tên..."
+          />
           <button
             type="button"
             onClick={() => setFilterOpen(true)}
@@ -109,23 +105,10 @@ export default function HomeScreen({
               </span>
             )}
           </button>
-        </div>
+        </form>
       </div>
 
       <div className="px-4 mt-5">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-bold text-foreground">Phong cách</h3>
-        </div>
-
-        <StyleFilter
-          category={activeCategory}
-          subcategory={activeSubcategory}
-          onChange={(c, sub) => {
-            setActiveCategory(c);
-            setActiveSubcategory(sub);
-          }}
-        />
-
         {profile?.role !== "photographer" && (
           <div
             className="mt-5 rounded-2xl p-4 flex gap-3 items-start"
@@ -202,7 +185,14 @@ export default function HomeScreen({
         open={filterOpen}
         value={filter}
         onClose={() => setFilterOpen(false)}
-        onApply={setFilter}
+        onApply={(f) => {
+          // Lưu bộ lọc dùng chung; có bộ lọc thì đưa sang Khám phá để xem kết quả
+          setDiscover({ filter: f, ...(query.trim() ? { query: query.trim() } : {}) });
+          if (isFilterActive(f)) {
+            setQuery("");
+            setScreen("search");
+          }
+        }}
         availableLocations={availableLocations}
       />
     </div>

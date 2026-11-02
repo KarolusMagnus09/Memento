@@ -3,6 +3,8 @@ import { ArrowLeft, Send } from "lucide-react";
 import type { Screen } from "../types";
 import { BG, TEAL } from "../constants";
 import { Avatar } from "../components/shared/Avatar";
+import { DeletedBadge } from "../components/shared/DeletedBadge";
+import { DELETED_USER_NAME, isDeletedUserName } from "../lib/deletedAccount";
 import {
   fetchOfferMessages, markOfferRead, sendOfferMessage, subscribeOfferMessages,
   type OfferChatTarget, type OfferMessage,
@@ -25,6 +27,10 @@ export default function OfferChatScreen({ target, userId, backTo, setScreen, onR
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  // Người kia đã xóa tài khoản → vẫn xem lại chat, không gửi được tin mới
+  const [goneByError, setGoneByError] = useState(false);
+  const partnerDeleted = goneByError || isDeletedUserName(target.partnerName);
+  const canSend = target.canSend && !partnerDeleted;
 
   const merge = (incoming: OfferMessage[]) =>
     setMsgs((cur) => {
@@ -56,6 +62,7 @@ export default function OfferChatScreen({ target, userId, backTo, setScreen, onR
     setSending(true); setError(null);
     const r = await sendOfferMessage(target.offerId, body);
     setSending(false);
+    if (r.error && r.error.includes("ACCOUNT_DELETED")) { setGoneByError(true); setError(null); return; }
     if (r.error || !r.message) { setError(r.error || "Chưa gửi được"); return; }
     setText("");
     merge([r.message]);
@@ -66,9 +73,12 @@ export default function OfferChatScreen({ target, userId, backTo, setScreen, onR
       <div className="flex items-center gap-3 px-4 pt-7 pb-3 bg-white border-b border-border">
         <button type="button" onClick={() => setScreen(backTo)} aria-label="Quay lại"
           className="w-9 h-9 rounded-full bg-muted flex items-center justify-center"><ArrowLeft size={18} style={{ color: TEAL }} /></button>
-        <Avatar src={target.partnerAvatar} size={36} />
+        <Avatar src={partnerDeleted ? null : target.partnerAvatar} size={36} />
         <div className="min-w-0">
-          <p className="font-bold text-sm truncate">{target.partnerName}</p>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <p className="font-bold text-sm truncate">{partnerDeleted ? DELETED_USER_NAME : target.partnerName}</p>
+            {partnerDeleted && <DeletedBadge />}
+          </div>
           <p className="text-[11px] text-muted-foreground truncate">Về đơn: {target.title}</p>
         </div>
       </div>
@@ -93,7 +103,7 @@ export default function OfferChatScreen({ target, userId, backTo, setScreen, onR
 
       <div className="bg-white border-t border-border px-3 pt-2" style={{ paddingBottom: "calc(10px + env(safe-area-inset-bottom))" }}>
         {error && <p className="text-xs text-red-600 mb-1 px-1">{error}</p>}
-        {target.canSend ? (
+        {canSend ? (
           <div className="flex items-end gap-2">
             <textarea value={text} onChange={(e) => setText(e.target.value.slice(0, 2000))} rows={1}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
@@ -104,7 +114,9 @@ export default function OfferChatScreen({ target, userId, backTo, setScreen, onR
             </button>
           </div>
         ) : (
-          <p className="text-xs text-muted-foreground text-center py-2">Đề nghị này đã đóng, không thể nhắn thêm.</p>
+          <p className="text-xs text-muted-foreground text-center py-2">
+            {partnerDeleted ? "Người này đã xóa tài khoản nên bạn không thể nhắn thêm." : "Đề nghị này đã đóng, không thể nhắn thêm."}
+          </p>
         )}
       </div>
     </div>

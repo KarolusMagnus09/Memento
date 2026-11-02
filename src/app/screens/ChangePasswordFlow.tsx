@@ -1,5 +1,5 @@
 import { useBackHandler } from "../lib/backNavigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronLeft, CheckCircle2, Eye, EyeOff } from "lucide-react";
 import type { Screen } from "../types";
 import type { Profile } from "../hooks/useProfile";
@@ -7,6 +7,7 @@ import { TEAL, TEAL_MID, BG } from "../constants";
 import { FieldBox } from "../components/shared/FieldBox";
 import { OtpInput } from "../components/shared/OtpInput";
 import { supabase } from "../lib/supabase";
+import { setPendingAction, clearPendingAction } from "../lib/pendingAction";
 import { translateAuthError } from "../lib/authErrors";
 import { validatePasswordStrength, PASSWORD_HINT } from "../lib/password";
 import { Captcha, CAPTCHA_ENABLED } from "../components/Captcha";
@@ -39,6 +40,9 @@ export default function ChangePasswordFlow({
   const [error, setError] = useState<string | null>(null);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [captchaResetKey, setCaptchaResetKey] = useState(0);
+
+  // Thoát màn hình thì dọn cờ đánh dấu (để mail "Quên mật khẩu" sau này không bị nhầm nội dung)
+  useEffect(() => () => { void clearPendingAction(); }, []);
 
   function resetCaptcha() {
     setCaptchaToken(null);
@@ -81,6 +85,7 @@ export default function ChangePasswordFlow({
     if (CAPTCHA_ENABLED && !captchaToken) { setError("Vui lòng hoàn thành xác minh CAPTCHA."); return; }
     setError(null);
     setBusy(true);
+    await setPendingAction("change_password");
     const { error: err } = await supabase.auth.resetPasswordForEmail(profile.email, {
       captchaToken: captchaToken ?? undefined,
     });
@@ -105,6 +110,7 @@ export default function ChangePasswordFlow({
     setIgnoreRecoveryEvent(false);
     setBusy(false);
     if (err) { setError(translateAuthError(err.message)); return; }
+    void clearPendingAction();
     setOtp("");
     setStep("new");
   }

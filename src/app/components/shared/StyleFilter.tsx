@@ -2,16 +2,15 @@ import { useRef, useState } from "react";
 import { TEAL, TEAL_LIGHT, styles } from "../../constants";
 
 /**
- * Bộ lọc "Phong cách" DÙNG CHUNG cho Trang chủ và Khám phá.
- * - Hàng ô nhóm (kéo ngang được)
- * - Chọn 1 nhóm → loại con mở NGAY BÊN DƯỚI (nằm trong luồng trang, không nổi/float)
- * - Bấm lại ô đang chọn / chip đang chọn → hủy
- * - Chip loại con căn TRÁI như cũ (không center)
+ * "Phong cách" ở Khám phá — ĐỒNG BỘ với mục "Thể loại chụp" trong bộ lọc:
+ * cả hai cùng đọc / ghi filter.shootingStyles (danh sách thể loại con đã chọn).
+ * - Ô nhóm sáng khi nhóm đó có ít nhất 1 thể loại con được chọn.
+ * - Bấm ô nhóm chưa chọn → chọn tất cả thể loại con của nhóm và mở danh sách chip bên dưới.
+ * - Bấm ô nhóm đang mở → bỏ chọn cả nhóm. Chip bật/tắt từng thể loại; chip "Tất cả" chọn / bỏ cả nhóm.
  */
-export function StyleFilter({ category, subcategory, onChange }: {
-  category: string | null;
-  subcategory: string | null;
-  onChange: (category: string | null, subcategory: string | null) => void;
+export function StyleFilter({ selected, onChange }: {
+  selected: string[];
+  onChange: (subs: string[]) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollFrac, setScrollFrac] = useState(0);
@@ -25,7 +24,16 @@ export function StyleFilter({ category, subcategory, onChange }: {
     setThumbFrac(Math.min(1, el.clientWidth / Math.max(el.scrollWidth, 1)));
   }
 
-  const activeGroup = styles.find((s) => s.label === category) ?? null;
+  const [openLabel, setOpenLabel] = useState<string | null>(null);
+  const picked = new Set(selected);
+  const countIn = (g: (typeof styles)[number]) => g.subcategories.filter((x) => picked.has(x)).length;
+
+  // Nhóm đang mở chip: nhóm vừa bấm (nếu còn chọn), nếu không thì nhóm đầu tiên có chọn (vd. chọn từ bộ lọc)
+  const openGroup =
+    styles.find((g) => g.label === openLabel && countIn(g) > 0) ?? styles.find((g) => countIn(g) > 0) ?? null;
+
+  const withoutGroup = (g: (typeof styles)[number]) => selected.filter((x) => !g.subcategories.includes(x));
+  const withAllOfGroup = (g: (typeof styles)[number]) => [...withoutGroup(g), ...g.subcategories];
 
   return (
     <div className="w-full max-w-full">
@@ -36,12 +44,21 @@ export function StyleFilter({ category, subcategory, onChange }: {
         style={{ WebkitOverflowScrolling: "touch" }}
       >
         {styles.map((s) => {
-          const active = category === s.label;
+          const active = countIn(s) > 0;
           return (
             <button
               key={s.label}
               type="button"
-              onClick={() => (active ? onChange(null, null) : onChange(s.label, null))}
+              onClick={() => {
+                if (!active) {
+                  onChange(withAllOfGroup(s));
+                  setOpenLabel(s.label);
+                } else if (openGroup?.label !== s.label) {
+                  setOpenLabel(s.label); // đang chọn nhưng chưa mở → mở ra xem
+                } else {
+                  onChange(withoutGroup(s)); // đang mở → bỏ chọn cả nhóm
+                }
+              }}
               className="snap-start flex-shrink-0 flex flex-col items-center gap-1.5"
               style={{ width: 76 }}
             >
@@ -86,28 +103,34 @@ export function StyleFilter({ category, subcategory, onChange }: {
         </div>
       )}
 
-      {/* Loại con: căn trái như cũ, full width */}
-      {activeGroup && (
+      {/* Loại con: căn trái, full width */}
+      {openGroup && (
         <div className="mt-3 bg-white rounded-2xl border border-border p-3 w-full max-w-full box-border">
           <p
             className="text-[11px] font-bold uppercase tracking-wide mb-2 text-left"
             style={{ color: TEAL_LIGHT }}
           >
-            {activeGroup.label}
+            {openGroup.label}
           </p>
           <div className="flex flex-wrap gap-2 justify-start w-full">
             <Chip
               label="Tất cả"
-              active={!subcategory}
-              onClick={() => onChange(activeGroup.label, null)}
+              active={countIn(openGroup) === openGroup.subcategories.length}
+              onClick={() =>
+                onChange(
+                  countIn(openGroup) === openGroup.subcategories.length
+                    ? withoutGroup(openGroup)
+                    : withAllOfGroup(openGroup)
+                )
+              }
             />
-            {activeGroup.subcategories.map((sub) => (
+            {openGroup.subcategories.map((sub) => (
               <Chip
                 key={sub}
                 label={sub}
-                active={subcategory === sub}
+                active={picked.has(sub)}
                 onClick={() =>
-                  onChange(activeGroup.label, subcategory === sub ? null : sub)
+                  onChange(picked.has(sub) ? selected.filter((x) => x !== sub) : [...selected, sub])
                 }
               />
             ))}

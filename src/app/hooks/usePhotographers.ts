@@ -135,6 +135,24 @@ export function usePhotographers() {
         /* chưa chạy SQL 030 thì bỏ qua */
       }
 
+      // Ẩn photographer đã xóa tài khoản (hồ sơ còn lại chỉ để các đơn cũ không lỗi)
+      try {
+        const { data: removed } = await supabase.from("profiles").select("id").not("deleted_at", "is", null);
+        const removedIds = new Set((removed ?? []).map((b: { id: string }) => b.id));
+        if (removedIds.size) list = list.filter((p) => !p.user_id || !removedIds.has(p.user_id));
+      } catch {
+        /* chưa chạy SQL xóa tài khoản thì bỏ qua */
+      }
+
+      // Ẩn tài khoản admin khỏi trang chủ / Khám phá / tìm kiếm (admin có hồ sơ photographer để test)
+      try {
+        const { data: admins } = await supabase.from("profiles").select("id").eq("role", "admin");
+        const adminIds = new Set((admins ?? []).map((a: { id: string }) => a.id));
+        if (adminIds.size) list = list.filter((p) => !p.user_id || !adminIds.has(p.user_id));
+      } catch {
+        /* không đọc được profiles thì bỏ qua */
+      }
+
       if (!cancelled) {
         setPhotographers(list);
         setLoading(false);

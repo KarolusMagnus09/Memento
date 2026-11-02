@@ -6,6 +6,8 @@ import type { Screen } from "../types";
 import { TEAL, TEAL_LIGHT, BG } from "../constants";
 import { Avatar } from "../components/shared/Avatar";
 import { ChatReportModal } from "../components/shared/ChatReportModal";
+import { DeletedBadge } from "../components/shared/DeletedBadge";
+import { DELETED_USER_NAME } from "../lib/deletedAccount";
 import {
   MAX_MESSAGE_LENGTH,
   dayKey,
@@ -64,6 +66,8 @@ export default function ChatScreen({
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [canSend, setCanSend] = useState(target.canSend);
+  // Đối tác đã xóa tài khoản → chỉ xem lại, không gửi được tin mới
+  const [partnerDeleted, setPartnerDeleted] = useState(!!target.partnerDeleted);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -85,7 +89,11 @@ export default function ChatScreen({
 
   const isAdminThread = target.kind === "admin";
   // Admin thread: user được trả lời (sau SQL 035). Booking: theo canSend.
-  const readOnly = isAdminThread ? false : !canSend;
+  const readOnly = isAdminThread ? false : !canSend || partnerDeleted;
+  // Tên + avatar hiển thị: đã xóa thì ẩn thông tin cá nhân
+  const viewTarget: ChatTarget = partnerDeleted
+    ? { ...target, partnerName: DELETED_USER_NAME, partnerAvatar: null }
+    : target;
 
   /* ── Đánh dấu đã đọc (gộp nhiều lần gọi, bỏ qua khi tab đang ẩn) ── */
   const markRead = useCallback(() => {
@@ -125,7 +133,10 @@ export default function ChatScreen({
     const { items, error } = await fetchConversations();
     if (error) return;
     const me = items.find((c) => c.conversation_id === target.id);
-    if (me) setCanSend(me.can_send);
+    if (me) {
+      setCanSend(me.can_send);
+      if (me.partner_deleted) setPartnerDeleted(true);
+    }
   }, [target.id, isAdminThread]);
 
   const initialLoad = useCallback(async () => {
@@ -245,6 +256,11 @@ export default function ChatScreen({
     const { message, error } = await sendMessage(target.id, body);
     setSending(false);
     if (error || !message) {
+      if (error && error.includes("ACCOUNT_DELETED")) {
+        setPartnerDeleted(true); // người kia vừa xóa tài khoản
+        setSendError(null);
+        return;
+      }
       setSendError(error || "Chưa gửi được tin nhắn");
       void refreshCanSend();
       return;
@@ -315,11 +331,15 @@ export default function ChatScreen({
         >
           <ChevronLeft size={18} strokeWidth={2.5} />
         </button>
-        <PartnerAvatar target={target} size={40} />
+        <PartnerAvatar target={viewTarget} size={40} />
         <div className="flex-1 min-w-0">
-          <p className="font-bold text-sm truncate" style={{ color: TEAL }}>{target.partnerName}</p>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <p className="font-bold text-sm truncate" style={{ color: TEAL }}>{viewTarget.partnerName}</p>
+            {partnerDeleted && <DeletedBadge />}
+          </div>
           {isAdminThread && <p className="text-xs text-muted-foreground">Tin nhắn với Memento — bạn có thể trả lời</p>}
-          {!isAdminThread && !canSend && <p className="text-xs text-muted-foreground">Chỉ xem lại</p>}
+          {!isAdminThread && partnerDeleted && <p className="text-xs" style={{ color: "#dc2626" }}>Tài khoản đã bị xóa</p>}
+          {!isAdminThread && !partnerDeleted && !canSend && <p className="text-xs text-muted-foreground">Chỉ xem lại</p>}
         </div>
         {!isAdminThread && (
           <div className="relative flex-shrink-0">
@@ -417,7 +437,7 @@ export default function ChatScreen({
             const { m, mine, showAvatar, showMeta, isLastMine } = r;
             return (
               <div key={m.id} className={`flex gap-2 ${mine ? "flex-row-reverse" : ""} ${showMeta ? "mb-3" : "mb-0.5"}`}>
-                {!mine && (showAvatar ? <PartnerAvatar target={target} size={28} /> : <span className="w-7 flex-shrink-0" />)}
+                {!mine && (showAvatar ? <PartnerAvatar target={viewTarget} size={28} /> : <span className="w-7 flex-shrink-0" />)}
                 <div className="max-w-[75%] min-w-0">
                   <div
                     className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
@@ -461,6 +481,8 @@ export default function ChatScreen({
           <p className="text-xs text-muted-foreground leading-relaxed">
             {isAdminThread
               ? "Đây là tin nhắn từ Memento, bạn không thể trả lời tại đây."
+              : partnerDeleted
+              ? "Người này đã xóa tài khoản nên bạn không thể gửi tin nhắn mới. Bạn vẫn xem lại được các tin nhắn cũ."
               : "Hai bên chưa có đơn hợp lệ (đơn bị từ chối hoặc đã huỷ), nên bạn chỉ xem lại được tin nhắn. Khi có đơn mới, bạn sẽ nhắn tiếp được."}
           </p>
         </div>
@@ -506,7 +528,7 @@ export default function ChatScreen({
 
       <ChatReportModal
         open={reportOpen}
-        partnerName={target.partnerName}
+        partnerName={viewTarget.partnerName}
         onClose={() => setReportOpen(false)}
         onSubmit={(description) => reportConversation(target.id, description)}
         onDone={(msg) => setNotice(msg)}

@@ -2,13 +2,16 @@ import { useBackHandler } from "../lib/backNavigation";
 import {
   Calendar, MessageCircle, Clock, Check, X, QrCode, ChevronRight, ArrowLeft, Flag,
   SlidersHorizontal, ChevronLeft, Flag as FlagIcon, Briefcase, Hash, Wallet, StickyNote, Tag, User as UserIcon,
-  Loader2, CheckCircle2,
+  Loader2, CheckCircle2, Pin, MoreVertical,
 } from "lucide-react";
 import type { Screen, Photographer } from "../types";
 import { TEAL, TEAL_MID, TEAL_LIGHT, BG, MEMENTO_PAYMENT } from "../constants";
 import { Avatar } from "../components/shared/Avatar";
+import { DeletedBadge } from "../components/shared/DeletedBadge";
+import { isDeletedUserName } from "../lib/deletedAccount";
 import { HandoverPanel } from "../components/shared/HandoverPanel";
 import { ConfirmModal } from "../components/shared/ConfirmModal";
+import { RefundInfoSheet } from "../components/shared/RefundInfoSheet";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { supabase } from "../lib/supabase";
@@ -54,6 +57,17 @@ import {
   calcPtgAdvance,
   calcPtgFinalTransfer,
   categoryLabel,
+  isStagedPayment,
+  isPinnedBy,
+  togglePinBooking,
+  cancelMode,
+  cancelRequestState,
+  requestMutualCancel,
+  withdrawCancelRequest,
+  isRefundOpen,
+  canPayFinalNow,
+  DEPOSIT_PCT,
+  FINAL_PCT,
   type BookingRow,
   type BookingStatus,
   type PhotoFeedback,
@@ -120,6 +134,8 @@ const statusLabels: Record<string, string> = {
 function statusColor(b: BookingRow) {
   if (b.status === "completed" || (b.status === "paid" && b.final_paid_at)) return GREEN;
   if (isAwaitingDeposit(b) || isAwaitingFinal(b) || isHandover(b) || isShooting(b) || b.status === "pending") return YELLOW;
+  if (b.status === "cancelled" && b.refund_status === "need_info") return RED;
+  if (b.status === "cancelled" && (b.refund_status === "pending" || b.refund_status === "done")) return b.refund_status === "done" ? GREEN : YELLOW;
   if (b.status === "rejected" || b.status === "cancelled") return RED;
   return statusColors[b.status] || TEAL;
 }
@@ -175,8 +191,8 @@ function PriceBreakdown({
   const sumLines = lines.reduce((sum, l) => sum + (l.price ?? 0), 0);
   const base = allKnown && sumLines > 0 ? sumLines : total;
   const fee = Math.round(base * 0.1);
-  const ptgAdvance = Math.round(base * 0.2);
-  const ptgFinalExtra = Math.round(base * 0.7);
+  const deposit = Math.round(base * 0.2);
+  const remaining = base - deposit;
   const ptgTotal = Math.round(base * 0.9);
   let run = 0;
 
@@ -235,11 +251,14 @@ function PriceBreakdown({
       <div className="px-3 py-2.5 border-t border-border space-y-1 text-[11px] leading-relaxed" style={{ background: "#FFF8E7" }}>
         <p className="font-bold text-xs" style={{ color: "#92400e" }}>Luồng tiền</p>
         <p style={{ color: "#78350f" }}>
-          • Khi khách thanh toán: photographer nhận trước <strong>{formatVnd(ptgAdvance)}</strong> (20%).
+          • Khi photographer xác nhận: khách đặt cọc <strong>{formatVnd(deposit)}</strong> ({DEPOSIT_PCT}%).
+          Nếu cả hai bên cùng đồng ý hủy, cọc được hoàn 100%.
         </p>
         <p style={{ color: "#78350f" }}>
-          • Khi lịch hẹn hoàn tất: Memento chuyển phần còn lại để photographer nhận đủ <strong>{formatVnd(ptgTotal)}</strong> (90%),
-          sau khi trừ phí 10% (<strong>{formatVnd(fee)}</strong>). Phần chuyển thêm: <strong>{formatVnd(ptgFinalExtra)}</strong>.
+          • Sau buổi chụp: khách trả nốt <strong>{formatVnd(remaining)}</strong> ({FINAL_PCT}%) để nhận link Drive ảnh.
+        </p>
+        <p style={{ color: "#78350f" }}>
+          • Khi hoàn tất: photographer nhận <strong>{formatVnd(ptgTotal)}</strong> (90%), Memento giữ phí 10% (<strong>{formatVnd(fee)}</strong>).
         </p>
       </div>
 
@@ -482,7 +501,7 @@ export default function BookingsScreen({
   const [ptgNoteDraft, setPtgNoteDraft] = useState<Record<string, string>>({});
   const [toast, setToast] = useState<string | null>(null);
   const [payBooking, setPayBooking] = useState<BookingRow | null>(null);
-  /** deposit = cọc 10%, final = thanh toán 90% */
+  /** deposit = cọc 20%, final = trả nốt 80% để nhận Drive */
   const [payMode, setPayMode] = useState<"deposit" | "final">("deposit");
   /** Kiểm tra thanh toán SePay trong modal QR */
   const [payCheck, setPayCheck] = useState<"idle" | "checking" | "paid" | "notyet">("idle");
@@ -508,7 +527,15 @@ export default function BookingsScreen({
   const [reportMsg, setReportMsg] = useState<string | null>(null);
   /** Popup xác nhận buổi chụp xong (2 bên) */
   const [shootAsk, setShootAsk] = useState<BookingRow | null>(null);
+  const [refundAsk, setRefundAsk] = useState<BookingRow | null>(null);
   const [shootBusy, setShootBusy] = useState(false);
+  /** Menu 3 chấm đang mở trên thẻ nào */
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  /** Hộp thoại hủy deal / hủy đơn */
+  const [cancelAsk, setCancelAsk] = useState<BookingRow | null>(null);
+  const [cancelBusy, setCancelBusy] = useState(false);
+  /** Yêu cầu hủy của bên kia đã hiện popup rồi thì không tự bật lại */
+  const seenCancelReq = useRef<Set<string>>(new Set());
 
   // Vuốt/Back: đóng popup/trang chi tiết đang mở trước (cái mở sau đóng trước)
   useBackHandler(!!detail, () => setDetail(null));
@@ -534,6 +561,36 @@ export default function BookingsScreen({
   useEffect(() => {
     reload();
   }, [reload]);
+
+  // Bên kia ghim / yêu cầu hủy / thanh toán... → tự cập nhật (realtime + hỏi lại mỗi 20 giây khi đang xem)
+  useEffect(() => {
+    if (!userId) return;
+    const ch = supabase
+      .channel(`bookings-live:${userId}:${Math.random().toString(36).slice(2, 7)}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "bookings", filter: `client_id=eq.${userId}` }, () => { void reload(); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "bookings", filter: `photographer_user_id=eq.${userId}` }, () => { void reload(); })
+      .subscribe();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void reload();
+    }, 20000);
+    return () => {
+      window.clearInterval(timer);
+      void supabase.removeChannel(ch);
+    };
+  }, [userId, reload]);
+
+  // Bên kia vừa yêu cầu hủy đơn → bật popup hỏi đồng ý (mỗi yêu cầu chỉ bật một lần)
+  useEffect(() => {
+    if (!userId || cancelAsk) return;
+    for (const b of rows) {
+      if (cancelMode(b) !== "mutual" || cancelRequestState(b, userId) !== "theirs") continue;
+      const key = `${b.id}:${b.cancel_req_client_at || ""}:${b.cancel_req_ptg_at || ""}`;
+      if (seenCancelReq.current.has(key)) continue;
+      seenCancelReq.current.add(key);
+      setCancelAsk(b);
+      break;
+    }
+  }, [rows, userId, cancelAsk]);
 
   // Giữ bảng chi tiết đồng bộ sau khi reload (đổi trạng thái, thanh toán...)
   useEffect(() => {
@@ -596,7 +653,7 @@ export default function BookingsScreen({
 
   const filtered = useMemo(() => {
     let list = rows.filter((b) => {
-      if (filter === "all") return b.status !== "cancelled";
+      if (filter === "all") return b.status !== "cancelled" || isRefundOpen(b);
       if (filter === "rejected") return b.status === "rejected" || b.status === "cancelled";
       if (filter === "confirmed") return isAwaitingDeposit(b) || b.status === "confirmed";
       if (filter === "deposit_paid") return isShooting(b) || b.status === "deposit_paid";
@@ -625,8 +682,9 @@ export default function BookingsScreen({
       const past = list.filter((b) => startTs(b) < now).sort((a, b) => startTs(b) - startTs(a));
       list = [...upcoming, ...past];
     }
-    return list;
-  }, [rows, filter, cats, sort, rangeFrom, rangeTo]);
+    // Lịch hẹn đã ghim luôn nằm trên cùng (giữ nguyên thứ tự còn lại)
+    return [...list].sort((a, b) => Number(isPinnedBy(b, userId)) - Number(isPinnedBy(a, userId)));
+  }, [rows, filter, cats, sort, rangeFrom, rangeTo, userId]);
 
   async function act(id: string, status: BookingStatus) {
     setActingId(id);
@@ -652,6 +710,46 @@ export default function BookingsScreen({
     } finally {
       setActingId(null);
     }
+  }
+
+  async function togglePin(b: BookingRow) {
+    const r = await togglePinBooking(b.id);
+    if (r.error) {
+      setToast(r.error);
+      return;
+    }
+    setToast(r.pinned ? "Đã ghim lịch hẹn" : "Đã bỏ ghim");
+    await reload();
+  }
+
+  /** Hủy deal (chưa đóng tiền) hoặc gửi / đồng ý yêu cầu hủy (đã đặt cọc) */
+  async function runCancel(b: BookingRow) {
+    const mode = cancelMode(b);
+    setCancelBusy(true);
+    try {
+      if (mode === "free") {
+        const err = await updateBookingStatus(b.id, "cancelled");
+        setToast(err || "Đã hủy deal — bạn chưa thanh toán nên không mất phí");
+      } else if (mode === "mutual") {
+        const r = await requestMutualCancel(b.id);
+        if (r.error) setToast(r.error);
+        else if (r.result === "cancelled") setToast("Hai bên đã đồng ý hủy — tiền cọc sẽ được hoàn 100%");
+        else setToast("Đã gửi yêu cầu hủy — đang chờ bên kia đồng ý");
+      }
+      setCancelAsk(null);
+      await reload();
+    } finally {
+      setCancelBusy(false);
+    }
+  }
+
+  async function runWithdrawCancel(b: BookingRow) {
+    setCancelBusy(true);
+    const err = await withdrawCancelRequest(b.id);
+    setCancelBusy(false);
+    setToast(err || "Đã rút yêu cầu hủy — đơn vẫn tiếp tục");
+    setCancelAsk(null);
+    await reload();
   }
 
   async function confirmPaid(id: string) {
@@ -681,7 +779,7 @@ export default function BookingsScreen({
   // Đã nhận tiền (SePay → webhook đã đổi trạng thái đơn) theo đúng phase đang thanh toán
   function isPaidForMode(row: BookingRow, mode: "deposit" | "final"): boolean {
     const depositOk = mode === "deposit" && (row.status === "deposit_paid" || row.status === "paid" || !!row.deposit_paid_at || row.status === "handover" || row.status === "final_payment" || row.status === "completed");
-    const finalOk = mode === "final" && (row.status === "completed" || row.payment_status === "fully_paid");
+    const finalOk = mode === "final" && (row.status === "completed" || !!row.final_paid_at || row.payment_status === "fully_paid");
     return depositOk || finalOk;
   }
 
@@ -693,7 +791,7 @@ export default function BookingsScreen({
       paidTimer.current = null;
       setPayBooking(null);
       setPayBank(null);
-      setToast(mode === "deposit" ? "Thanh toán thành công, buổi chụp sẽ diễn ra theo lịch" : "Đã hoàn tất");
+      setToast(mode === "deposit" ? `Đặt cọc ${DEPOSIT_PCT}% thành công, buổi chụp sẽ diễn ra theo lịch` : "Đã thanh toán đủ. Link Drive sẽ mở cho bạn ngay khi photographer gửi ảnh");
       reload();
     }, 2200);
   }
@@ -982,6 +1080,11 @@ export default function BookingsScreen({
               const awaitingDeposit = isAwaitingDeposit(b);
               const awaitingFinal = isAwaitingFinal(b);
               const awaiting = awaitingDeposit || awaitingFinal;
+              const staged = isStagedPayment(b);
+              const pinned = isPinnedBy(b, userId);
+              const cMode = cancelMode(b);
+              const cState = cancelRequestState(b, userId);
+              const canMenu = !["rejected", "cancelled", "completed"].includes(b.status);
               const shooting = isShooting(b);
               const handover = isHandover(b);
               const step = flowStep(b);
@@ -999,6 +1102,8 @@ export default function BookingsScreen({
               const displayAvatar = isPtg
                 ? b.client_avatar || ""
                 : b.photographer_avatar || "";
+              // Người kia đã xóa tài khoản: tên "Người dùng đã bị xóa", không avatar, không mở hồ sơ
+              const otherDeleted = isDeletedUserName(displayName);
 
               return (
                 <div
@@ -1014,8 +1119,10 @@ export default function BookingsScreen({
                       style={{ background: "#FFF8E7", color: "#92400e", border: "1px solid #FDE68A" }}
                     >
                       {isPtg
-                        ? "⏳ Đang chờ khách thanh toán."
-                        : `💳 Hãy thanh toán ${formatVnd(getDepositAmount(b))} để giữ lịch nhé.`}
+                        ? (staged ? `⏳ Đang chờ khách đặt cọc ${DEPOSIT_PCT}%.` : "⏳ Đang chờ khách thanh toán.")
+                        : (staged
+                            ? `💳 Hãy đặt cọc ${DEPOSIT_PCT}% (${formatVnd(getDepositAmount(b))}) để giữ lịch nhé. Cọc được hoàn 100% nếu hai bên cùng đồng ý hủy.`
+                            : `💳 Hãy thanh toán ${formatVnd(getDepositAmount(b))} để giữ lịch nhé.`)}
                     </div>
                   )}
                   {step === "wait_date" && (
@@ -1044,8 +1151,18 @@ export default function BookingsScreen({
                       style={{ background: "#FFF8E7", color: "#92400e", border: "1px solid #FDE68A" }}
                     >
                       {isPtg
-                        ? "📤 Cả hai đã xác nhận buổi chụp. Hãy gửi link Google Drive ảnh cho khách."
-                        : "⏳ Đã xác nhận buổi chụp. Đang đợi photographer gửi ảnh."}
+                        ? `📤 Cả hai đã xác nhận buổi chụp. Hãy gửi link Google Drive ảnh cho khách.${staged ? ` Link chỉ mở cho khách sau khi khách trả nốt ${FINAL_PCT}%.` : ""}`
+                        : `⏳ Đã xác nhận buổi chụp. Đang đợi photographer gửi ảnh.${staged ? ` Bạn có thể trả nốt ${FINAL_PCT}% trước, link Drive sẽ mở ngay khi photographer gửi.` : ""}`}
+                    </div>
+                  )}
+                  {step === "await_drive" && (
+                    <div
+                      className="mx-3 mt-3 px-3 py-2 rounded-xl text-xs font-semibold"
+                      style={{ background: "#FFF8E7", color: "#92400e", border: "1px solid #FDE68A" }}
+                    >
+                      {isPtg
+                        ? "✅ Khách đã trả nốt phần còn lại. Hãy gửi link Google Drive ảnh cho khách."
+                        : "✅ Bạn đã thanh toán đủ. Đang đợi photographer gửi link Drive."}
                     </div>
                   )}
                   {step === "closing" && (
@@ -1056,7 +1173,86 @@ export default function BookingsScreen({
                       ✅ Cả hai đã xác nhận hoàn tất. Memento đang xử lý thanh toán và sẽ gửi ảnh hoàn chỉnh cho khách.
                     </div>
                   )}
-                  {handover && (
+                  {step === "pay_final" && (
+                    <div
+                      className="mx-3 mt-3 px-3 py-2 rounded-xl text-xs font-semibold"
+                      style={{ background: "#FFF8E7", color: "#92400e", border: "1px solid #FDE68A" }}
+                    >
+                      {isPtg
+                        ? `⏳ Bạn đã gửi Drive. Đang chờ khách trả nốt ${FINAL_PCT}% để nhận link ảnh. Chỉ khi khách trả xong mới tiếp tục được.`
+                        : `📁 Photographer đã gửi ảnh. Hãy trả nốt ${FINAL_PCT}% (${formatVnd(getRemainingAmount(b))}) để nhận link Drive.`}
+                    </div>
+                  )}
+                  {b.status === "cancelled" && Number(b.refund_amount) > 0 && (() => {
+                    const amt = formatVnd(Number(b.refund_amount));
+                    const mineClient = userId === b.client_id;
+                    if (b.refund_status === "need_info") {
+                      return mineClient ? (
+                        <div
+                          className="mx-3 mt-3 px-3 py-3 rounded-xl text-xs"
+                          style={{ background: "#FEF2F2", color: "#991b1b", border: "1.5px solid #FCA5A5" }}
+                        >
+                          <p className="font-bold">💸 Cần thông tin để hoàn {amt}</p>
+                          <p className="mt-0.5">Hai bên đã đồng ý hủy. Điền tài khoản nhận tiền để Memento hoàn cọc cho bạn.</p>
+                          <button
+                            type="button"
+                            onClick={() => setRefundAsk(b)}
+                            className="mt-2 w-full py-2.5 rounded-xl text-white font-bold text-sm"
+                            style={{ background: "#dc2626" }}
+                          >
+                            Điền form hoàn tiền
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="mx-3 mt-3 px-3 py-2 rounded-xl text-xs font-semibold" style={{ background: "#EFF6FF", color: "#1e40af", border: "1px solid #BFDBFE" }}>
+                          💸 Hai bên đã đồng ý hủy. Đang chờ khách cung cấp tài khoản nhận hoàn cọc ({amt}).
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="mx-3 mt-3 px-3 py-2 rounded-xl text-xs font-semibold" style={{ background: b.refund_status === "done" ? "#ECFDF5" : "#EFF6FF", color: b.refund_status === "done" ? "#065f46" : "#1e40af", border: `1px solid ${b.refund_status === "done" ? "#A7F3D0" : "#BFDBFE"}` }}>
+                        {b.refund_status === "done"
+                          ? `✅ Hủy thành công. Tiền cọc ${amt} đã được hoàn cho khách.`
+                          : `⏳ Đang hoàn tiền: Memento sẽ chuyển ${amt} về ${b.refund_bank_name || "tài khoản"} ${b.refund_account ? "•••" + b.refund_account.slice(-4) : ""} của khách.`}
+                      </div>
+                    );
+                  })()}
+                  {cMode === "mutual" && cState === "theirs" && (
+                    <div
+                      className="mx-3 mt-3 px-3 py-2.5 rounded-xl text-xs"
+                      style={{ background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}
+                    >
+                      <p className="font-semibold">⚠️ {otherName} muốn hủy đơn này.</p>
+                      <p className="mt-0.5">Nếu bạn đồng ý, đơn hủy và tiền cọc được hoàn 100% cho khách. Nếu không, đơn vẫn tiếp tục.</p>
+                      <button
+                        type="button"
+                        onClick={() => setCancelAsk(b)}
+                        className="mt-2 w-full py-2 rounded-lg text-xs font-bold text-white"
+                        style={{ background: RED }}
+                      >
+                        Xem và trả lời
+                      </button>
+                    </div>
+                  )}
+                  {cMode === "mutual" && cState === "mine" && (
+                    <div
+                      className="mx-3 mt-3 px-3 py-2.5 rounded-xl text-xs"
+                      style={{ background: "#FFF8E7", color: "#92400e", border: "1px solid #FDE68A" }}
+                    >
+                      <p className="font-semibold">⏳ Bạn đã yêu cầu hủy đơn — đang chờ {otherName} đồng ý.</p>
+                      <p className="mt-0.5">Nếu họ không đồng ý, đơn vẫn tiếp tục và hai bên tự trao đổi với nhau.</p>
+                      <button
+                        type="button"
+                        disabled={cancelBusy}
+                        onClick={() => runWithdrawCancel(b)}
+                        className="mt-2 w-full py-2 rounded-lg text-xs font-bold border"
+                        style={{ borderColor: "#FDE68A", color: "#92400e", background: "white" }}
+                      >
+                        Rút yêu cầu hủy
+                      </button>
+                    </div>
+                  )}
+                  {handover && step !== "pay_final" && (
                     <div
                       className="mx-3 mt-3 px-3 py-2 rounded-xl text-xs font-semibold"
                       style={{ background: "#EFF6FF", color: "#1e40af", border: "1px solid #BFDBFE" }}
@@ -1067,27 +1263,86 @@ export default function BookingsScreen({
                   )}
                   
 
-                  <div className="px-4 pt-3 pb-2">
-                    <span className="text-sm font-bold" style={{ color: TEAL }}>
+                  <div className="px-4 pt-3 pb-2 flex items-center justify-between relative">
+                    <span className="text-sm font-bold flex items-center gap-1.5" style={{ color: TEAL }}>
                       Lịch hẹn
+                      {pinned && (
+                        <Pin size={14} className="fill-current" style={{ color: YELLOW }} aria-label="Đã ghim" />
+                      )}
                     </span>
+                    {canMenu && (
+                      <div className="relative">
+                        <button
+                          type="button"
+                          aria-label="Tùy chọn lịch hẹn"
+                          aria-haspopup="menu"
+                          aria-expanded={menuFor === b.id}
+                          onClick={(e) => { e.stopPropagation(); setMenuFor(menuFor === b.id ? null : b.id); }}
+                          className="w-8 h-8 -mr-1.5 rounded-full flex items-center justify-center"
+                          style={{ color: TEAL }}
+                        >
+                          <MoreVertical size={18} />
+                        </button>
+                        {menuFor === b.id && (
+                          <>
+                            <button
+                              type="button"
+                              aria-label="Đóng menu"
+                              className="fixed inset-0 z-20 cursor-default"
+                              onClick={() => setMenuFor(null)}
+                            />
+                            <div
+                              role="menu"
+                              className="absolute right-0 top-9 z-30 min-w-[200px] rounded-xl bg-white border border-border shadow-lg py-1 text-sm"
+                            >
+                              <button
+                                type="button"
+                                role="menuitem"
+                                onClick={() => { setMenuFor(null); togglePin(b); }}
+                                className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left font-semibold"
+                                style={{ color: TEAL }}
+                              >
+                                <Pin size={15} className={pinned ? "fill-current" : ""} />
+                                {pinned ? "Bỏ ghim" : "Ghim lịch hẹn"}
+                              </button>
+                              {cMode !== "none" && (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  onClick={() => { setMenuFor(null); setCancelAsk(b); }}
+                                  className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left font-semibold border-t border-border"
+                                  style={{ color: RED }}
+                                >
+                                  <X size={15} />
+                                  {cMode === "free" ? "Hủy deal" : "Hủy đơn"}
+                                </button>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   <div className="px-4 pb-3">
                     {/* Dải thông tin người (bấm = xem hồ sơ) */}
                     <button
                       type="button"
-                      onClick={() => (isPtg ? setClientView(b) : openProfile(b))}
+                      onClick={() => { if (!otherDeleted) (isPtg ? setClientView(b) : openProfile(b)); }}
+                      disabled={otherDeleted}
                       className="w-full flex items-center gap-3 rounded-xl px-3 py-2.5 mb-3 text-left"
-                      style={{ background: "#f1f5f3" }}
+                      style={{ background: otherDeleted ? "#fff5f5" : "#f1f5f3", border: otherDeleted ? "1px solid #fecaca" : undefined }}
                     >
-                      <Avatar src={displayAvatar} size={40} />
+                      <Avatar src={otherDeleted ? null : displayAvatar} size={40} />
                       <div className="flex-1 min-w-0">
-                        <p className="font-bold text-sm truncate" style={{ color: TEAL }}>
-                          {displayName}
-                        </p>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <p className="font-bold text-sm truncate" style={{ color: otherDeleted ? "#6b7280" : TEAL }}>
+                            {displayName}
+                          </p>
+                          {otherDeleted && <DeletedBadge />}
+                        </div>
                         <p className="text-[11px] text-muted-foreground">
-                          {isPtg ? "Xem hồ sơ khách" : "Xem hồ sơ photographer"}
+                          {otherDeleted ? "Tài khoản đã bị xóa" : isPtg ? "Xem hồ sơ khách" : "Xem hồ sơ photographer"}
                         </p>
                       </div>
                       <span
@@ -1190,7 +1445,17 @@ export default function BookingsScreen({
                         className="w-full mt-2 py-3 rounded-xl text-sm font-bold text-white flex items-center justify-center gap-2 relative z-10"
                         style={{ background: YELLOW }}
                       >
-                        <QrCode size={18} /> Thanh toán · {formatVnd(getDepositAmount(b))}
+                        <QrCode size={18} /> {staged ? `Đặt cọc ${DEPOSIT_PCT}%` : "Thanh toán"} · {formatVnd(getDepositAmount(b))}
+                      </button>
+                    )}
+                    {isClient && canPayFinalNow(b) && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); openPayment(b, "final"); }}
+                        className="w-full mt-2 py-3 rounded-xl text-sm font-bold text-white flex items-center justify-center gap-2 relative z-10"
+                        style={{ background: YELLOW }}
+                      >
+                        <QrCode size={18} /> {step === "pay_final" ? `Trả nốt ${FINAL_PCT}% để nhận Drive` : `Trả nốt ${FINAL_PCT}% trước`} · {formatVnd(getRemainingAmount(b))}
                       </button>
                     )}
                     
@@ -1208,7 +1473,7 @@ export default function BookingsScreen({
                     )}
 
                     {/* Bước 4: chỉ PTG có form gửi Drive (khách thấy chữ vàng ở trên) */}
-                    {isPtg && step === "drive" && (
+                    {isPtg && (step === "drive" || step === "await_drive") && (
                       <HandoverPanel
                         booking={b}
                         role="ptg"
@@ -1220,7 +1485,7 @@ export default function BookingsScreen({
                     )}
 
                     {/* Bước 5–6: đã có Drive → khách góp ý, 2 bên xác nhận hoàn tất */}
-                    {step === "review" && isPtg && (
+                    {(step === "review" || step === "pay_final") && isPtg && (
                       <HandoverPanel
                         booking={b}
                         role="ptg"
@@ -1449,28 +1714,43 @@ export default function BookingsScreen({
                 </span>
                 {isAwaitingPayment(detail) && (
                   <p className="text-xs mt-2" style={{ color: "#92400e" }}>
-                    {detailIsPtg ? "Đang chờ khách thanh toán." : "Bạn hãy thanh toán để giữ lịch nhé."}
+                    {detailIsPtg
+                      ? (isStagedPayment(detail) ? `Đang chờ khách đặt cọc ${DEPOSIT_PCT}%.` : "Đang chờ khách thanh toán.")
+                      : (isStagedPayment(detail) ? `Bạn hãy đặt cọc ${DEPOSIT_PCT}% để giữ lịch nhé.` : "Bạn hãy thanh toán để giữ lịch nhé.")}
                   </p>
                 )}
               </div>
 
               <button
                 type="button"
-                onClick={() => (detailIsPtg ? setClientView(detail) : openProfile(detail))}
+                onClick={() => {
+                  if (isDeletedUserName(detailIsPtg ? detail.client_name : detail.photographer_name)) return;
+                  detailIsPtg ? setClientView(detail) : openProfile(detail);
+                }}
                 className="bg-white rounded-2xl p-4 flex items-center gap-3 text-left"
               >
-                <Avatar src={detailIsPtg ? detail.client_avatar : detail.photographer_avatar} size={48} />
+                <Avatar
+                  src={isDeletedUserName(detailIsPtg ? detail.client_name : detail.photographer_name) ? null : detailIsPtg ? detail.client_avatar : detail.photographer_avatar}
+                  size={48}
+                />
                 <div className="flex-1 min-w-0">
                   <p className="text-[11px] text-muted-foreground">
                     {detailIsPtg ? "Khách hàng" : "Photographer"}
                   </p>
-                  <p className="font-bold truncate" style={{ color: TEAL }}>
-                    {detailIsPtg ? detail.client_name || "Khách hàng" : detail.photographer_name}
-                  </p>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <p className="font-bold truncate" style={{ color: TEAL }}>
+                      {detailIsPtg ? detail.client_name || "Khách hàng" : detail.photographer_name}
+                    </p>
+                    {isDeletedUserName(detailIsPtg ? detail.client_name : detail.photographer_name) && <DeletedBadge />}
+                  </div>
                 </div>
-                <span className="flex items-center text-xs flex-shrink-0" style={{ color: TEAL }}>
-                  Xem hồ sơ <ChevronRight size={14} />
-                </span>
+                {isDeletedUserName(detailIsPtg ? detail.client_name : detail.photographer_name) ? (
+                  <span className="text-xs flex-shrink-0 font-semibold" style={{ color: "#dc2626" }}>Tài khoản đã bị xóa</span>
+                ) : (
+                  <span className="flex items-center text-xs flex-shrink-0" style={{ color: TEAL }}>
+                    Xem hồ sơ <ChevronRight size={14} />
+                  </span>
+                )}
               </button>
 
               <div className="bg-white rounded-2xl px-4 divide-y divide-border">
@@ -1525,14 +1805,14 @@ export default function BookingsScreen({
               </div>
 
               <div className="flex gap-2">
-                {userId === detail.client_id && isAwaitingPayment(detail) && (
+                {userId === detail.client_id && (isAwaitingPayment(detail) || canPayFinalNow(detail)) && (
                   <button
                     type="button"
-                    onClick={() => openPayment(detail, isAwaitingFinal(detail) ? "final" : "deposit")}
+                    onClick={() => openPayment(detail, canPayFinalNow(detail) ? "final" : "deposit")}
                     className="flex-1 py-3 rounded-xl text-sm font-bold text-white flex items-center justify-center gap-2"
                     style={{ background: YELLOW }}
                   >
-                    <QrCode size={16} /> Thanh toán
+                    <QrCode size={16} /> {canPayFinalNow(detail) ? `Trả nốt ${FINAL_PCT}%` : isStagedPayment(detail) ? `Đặt cọc ${DEPOSIT_PCT}%` : "Thanh toán"}
                   </button>
                 )}
                 {userId === detail.client_id && (detail.status === "pending" || detail.status === "confirmed") && (
@@ -1645,6 +1925,79 @@ export default function BookingsScreen({
       )}
 
       {/* Popup xác nhận buổi chụp xong */}
+      {cancelAsk && (() => {
+        const b = cancelAsk;
+        const mode = cancelMode(b);
+        const st = cancelRequestState(b, userId);
+        const amt = formatVnd(getDepositAmount(b));
+        const other = userId === b.client_id ? b.photographer_name || "Photographer" : b.client_name || "Khách hàng";
+        const close = () => { if (!cancelBusy) setCancelAsk(null); };
+        if (mode === "none") return null;
+        if (mode === "free") {
+          return (
+            <ConfirmModal
+              title="Hủy deal này?"
+              message="Bạn chưa thanh toán nên không mất phí nào. Lịch hẹn sẽ được hủy ngay."
+              onBackdropClick={close}
+              actions={[
+                { label: cancelBusy ? "Đang hủy…" : "Hủy deal", variant: "danger", onClick: () => { if (!cancelBusy) runCancel(b); } },
+                { label: "Giữ lại", variant: "secondary", onClick: close },
+              ]}
+            />
+          );
+        }
+        if (st === "mine") {
+          return (
+            <ConfirmModal
+              title="Bạn đã gửi yêu cầu hủy"
+              message={`Đang chờ ${other} đồng ý. Nếu họ không đồng ý, đơn vẫn tiếp tục và hai bên tự trao đổi với nhau.`}
+              onBackdropClick={close}
+              actions={[
+                { label: cancelBusy ? "Đang xử lý…" : "Rút yêu cầu hủy", variant: "danger", onClick: () => { if (!cancelBusy) runWithdrawCancel(b); } },
+                { label: "Đóng", variant: "secondary", onClick: close },
+              ]}
+            />
+          );
+        }
+        if (st === "theirs") {
+          return (
+            <ConfirmModal
+              title={`${other} muốn hủy đơn`}
+              message={`Nếu bạn đồng ý, đơn sẽ được hủy và tiền cọc ${amt} được hoàn 100% cho khách. Nếu không đồng ý, đơn vẫn tiếp tục.`}
+              onBackdropClick={close}
+              actions={[
+                { label: cancelBusy ? "Đang xử lý…" : "Đồng ý hủy đơn", variant: "danger", onClick: () => { if (!cancelBusy) runCancel(b); } },
+                { label: "Không đồng ý", variant: "secondary", onClick: close },
+              ]}
+            />
+          );
+        }
+        return (
+          <ConfirmModal
+            title="Yêu cầu hủy đơn?"
+            message={`Cần cả hai bên cùng đồng ý. Mình sẽ báo cho ${other}; nếu họ đồng ý, tiền cọc ${amt} được hoàn 100%. Nếu chỉ một bên đồng ý, đơn vẫn giữ nguyên và hai bên tự giải quyết với nhau.`}
+            onBackdropClick={close}
+            actions={[
+              { label: cancelBusy ? "Đang gửi…" : "Gửi yêu cầu hủy", variant: "danger", onClick: () => { if (!cancelBusy) runCancel(b); } },
+              { label: "Đóng", variant: "secondary", onClick: close },
+            ]}
+          />
+        );
+      })()}
+
+      {refundAsk && userId && (
+        <RefundInfoSheet
+          booking={refundAsk}
+          userId={userId}
+          onClose={() => setRefundAsk(null)}
+          onDone={async (m) => {
+            setRefundAsk(null);
+            setToast(m);
+            await reload();
+          }}
+        />
+      )}
+
       {shootAsk && (
         <ConfirmModal
           title="Xác nhận buổi chụp thành công?"
@@ -1777,8 +2130,10 @@ export default function BookingsScreen({
             ) : (
               <p className="text-[11px] text-amber-900 bg-amber-50 rounded-lg px-2 py-1.5 mb-3 leading-relaxed">
                 {payMode === "deposit"
-                  ? "Memento sẽ giữ khoản tiền này an toàn, ứng trước 20% cho photographer, phần còn lại được chuyển khi lịch hẹn hoàn tất."
-                  : "Thanh toán cho lịch hẹn."}
+                  ? (isStagedPayment(payBooking!)
+                      ? `Đây là khoản cọc ${DEPOSIT_PCT}% để giữ lịch. Memento giữ khoản này an toàn và hoàn 100% nếu hai bên cùng đồng ý hủy. ${FINAL_PCT}% còn lại bạn trả sau buổi chụp để nhận link Drive.`
+                      : "Memento sẽ giữ khoản tiền này an toàn và chuyển cho photographer khi lịch hẹn hoàn tất.")
+                  : `Thanh toán nốt ${FINAL_PCT}% để nhận link Drive ảnh. Sau khi hệ thống nhận tiền, link sẽ mở ngay cho bạn.`}
                 {" "}Sau khi chuyển khoản, bấm «Kiểm tra thanh toán» để hệ thống xác nhận.
               </p>
             )}

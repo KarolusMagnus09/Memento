@@ -1,9 +1,10 @@
-import { ChevronLeft, ChevronRight, Key, Laptop, MapPin, Mail, Building2, Eye, EyeOff } from "lucide-react";
+import { ChevronLeft, ChevronRight, Key, Laptop, MapPin, Mail, Building2, Eye, EyeOff, Trash2 } from "lucide-react";
 import type { Screen } from "../types";
 import type { Profile } from "../hooks/useProfile";
 import { TEAL, TEAL_LIGHT, BG, VN_BANKS } from "../constants";
 import { supabase } from "../lib/supabase";
 import { useEffect, useState } from "react";
+import { ClientBankCard } from "../components/shared/ClientBankCard";
 
 const LOC_PREF_KEY = "memento:location-pref:v1";
 
@@ -301,6 +302,11 @@ export default function SettingsScreen({
           </div>
         </div>
 
+        {/* Khách thường: TK nhận hoàn tiền cọc khi hủy đơn */}
+        {!isPtg && profile?.id && (
+          <ClientBankCard userId={profile.id} defaultName={profile.full_name || undefined} />
+        )}
+
         {/* Chỉ hiện với PTG đã có hồ sơ — đổi TK cần admin duyệt */}
         {isPtg && (
           <div className="bg-white rounded-2xl border border-border overflow-hidden">
@@ -493,6 +499,32 @@ export default function SettingsScreen({
             </div>
           )}
         </div>
+
+        {/* Xóa tài khoản (admin không tự xóa được) */}
+        {profile && profile.role !== "admin" && (
+          <div className="bg-white rounded-2xl border overflow-hidden" style={{ borderColor: "#fecaca" }}>
+            <p
+              className="text-xs font-bold uppercase tracking-wide px-4 py-3 border-b"
+              style={{ color: "#dc2626", borderColor: "#fee2e2" }}
+            >
+              Vùng nguy hiểm
+            </p>
+            <button
+              type="button"
+              onClick={() => setScreen("delete-account")}
+              className="w-full flex items-center gap-3 px-4 py-3.5"
+            >
+              <Trash2 size={18} style={{ color: "#dc2626" }} />
+              <div className="flex-1 text-left">
+                <p className="text-sm font-semibold" style={{ color: "#dc2626" }}>Xóa tài khoản</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Xóa vĩnh viễn hồ sơ và thông tin cá nhân của bạn
+                </p>
+              </div>
+              <ChevronRight size={16} className="text-muted-foreground" />
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

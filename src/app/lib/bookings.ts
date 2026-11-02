@@ -56,6 +56,23 @@ export type BookingRow = {
   ptg_success_at?: string | null;
   drive_released_at?: string | null;
   handover_note?: string | null;
+  /** Ghim lịch hẹn — mỗi bên ghim riêng, bên kia không thấy */
+  pinned_by_client?: boolean | null;
+  pinned_by_ptg?: boolean | null;
+  /** Yêu cầu hủy đơn đã đóng cọc: cần CẢ HAI bên đồng ý */
+  cancel_req_client_at?: string | null;
+  cancel_req_ptg_at?: string | null;
+  cancelled_at?: string | null;
+  /** Hoàn cọc khi hai bên cùng đồng ý hủy (admin chuyển khoản lại, rồi đánh dấu done) */
+  refund_amount?: number | null;
+  /** need_info = chờ khách điền TK · pending = đang hoàn tiền · done = hủy thành công */
+  refund_status?: "need_info" | "pending" | "done" | null;
+  refund_bank_code?: string | null;
+  refund_bank_name?: string | null;
+  refund_account?: string | null;
+  refund_account_name?: string | null;
+  refund_info_at?: string | null;
+  refund_done_at?: string | null;
   created_at: string;
   updated_at?: string;
 };
@@ -91,10 +108,12 @@ export const MAX_FEEDBACK_IMAGES = 4;
 
 const LOCAL_KEY = "memento:bookings:v1";
 const COMMISSION_RATE = 0.1; // platform giữ 10% hoa hồng
-/** User trả 100% tổng deal khi PTG xác nhận */
-const USER_PAY_RATE = 1;
-/** Ứng PTG 20% ngay sau khi user thanh toán */
-const PTG_ADVANCE_RATE = 0.2;
+/** Khách đặt cọc 20% giá dịch vụ khi PTG xác nhận; 80% còn lại trả sau buổi chụp để nhận Drive */
+const DEPOSIT_RATE = 0.2;
+export const DEPOSIT_PCT = Math.round(DEPOSIT_RATE * 100);
+export const FINAL_PCT = 100 - DEPOSIT_PCT;
+/** @deprecated luồng mới không còn ứng trước cho PTG — PTG nhận 90% một lần khi hoàn tất */
+const PTG_ADVANCE_RATE = 0;
 
 function readLocal(): BookingRow[] {
   try {
@@ -120,17 +139,18 @@ export function formatVnd(n: number) {
 }
 
 /**
- * User thanh toán 100% tổng deal (ví dụ 100k).
- * Memento giữ tiền → ứng PTG 20% → khi xong chuyển thêm 70% (PTG tổng 90%, platform 10%).
+ * Luồng tiền:
+ *  1. Khi PTG xác nhận → khách đặt cọc 20% (hoàn 100% nếu hai bên cùng đồng ý hủy).
+ *  2. Sau buổi chụp, PTG gửi Drive → khách trả nốt 80% để nhận link.
+ *  3. Hoàn tất → PTG nhận 90%, Memento giữ 10% hoa hồng.
  */
 export function calcDeposit(total: number) {
-  // alias: số tiền user phải trả = 100%
-  return Math.round(Number(total || 0) * USER_PAY_RATE);
+  return Math.round(Number(total || 0) * DEPOSIT_RATE);
 }
 
-/** @deprecated user không còn trả phần 2 — giữ để không vỡ import */
+/** 80% còn lại sau cọc */
 export function calcRemaining(total: number) {
-  return 0;
+  return Math.round(Number(total || 0)) - calcDeposit(total);
 }
 
 export function calcCommission(total: number) {
@@ -142,24 +162,31 @@ export function calcPtgPayout(total: number) {
   return Math.round(Number(total || 0) * (1 - COMMISSION_RATE));
 }
 
-/** Ứng PTG ngay sau user thanh toán = 20% */
+/** @deprecated luồng mới: không ứng trước */
 export function calcPtgAdvance(total: number) {
   return Math.round(Number(total || 0) * PTG_ADVANCE_RATE);
 }
 
-/** Phần còn lại chuyển PTG khi xong deal = 70% */
+/** Chuyển PTG khi xong deal = 90% (không còn ứng trước) */
 export function calcPtgFinalTransfer(total: number) {
   return calcPtgPayout(total) - calcPtgAdvance(total);
 }
 
-/** Số tiền user cần CK (100% deal) */
+/** Đơn theo luồng mới: có phần còn lại phải trả sau (đơn cũ trả 100% một lần thì remaining = 0) */
+export function isStagedPayment(b: BookingRow) {
+  return Number(b.remaining_amount) > 0;
+}
+
+/** Số tiền khách cần CK ở bước cọc (20%; đơn cũ = 100%) */
 export function getDepositAmount(b: BookingRow) {
   if (b.deposit_amount != null && Number(b.deposit_amount) > 0) return Number(b.deposit_amount);
   return calcDeposit(b.package_price);
 }
 
-export function getRemainingAmount(_b: BookingRow) {
-  return 0;
+/** Số tiền khách cần CK để nhận Drive (80%; đơn cũ = 0) */
+export function getRemainingAmount(b: BookingRow) {
+  if (!isStagedPayment(b)) return 0;
+  return Number(b.remaining_amount);
 }
 
 /** Chờ user thanh toán 100% sau khi PTG xác nhận */
@@ -198,16 +225,46 @@ export async function rejectUserTransferReport(id: string): Promise<string | nul
   return null;
 }
 
-export function isAwaitingFinal(_b: BookingRow) {
-  return false;
+/** PTG đã gửi Drive, khách chưa trả nốt 80% → chưa được xem link */
+export function isAwaitingFinal(b: BookingRow) {
+  if (!isStagedPayment(b)) return false;
+  if (["completed", "cancelled", "rejected"].includes(b.status)) return false;
+  if (b.final_paid_at) return false;
+  return !!(b.drive_url || b.drive_submitted_at) && isPaid(b);
 }
 
 export function isAwaitingPayment(b: BookingRow) {
   return isAwaitingDeposit(b);
 }
 
+/** Khách được phép trả nốt phần còn lại: sau khi 2 bên xác nhận buổi chụp, chưa trả, đơn còn hiệu lực (kể cả PTG chưa gửi Drive) */
+export function canPayFinalNow(b: BookingRow): boolean {
+  if (!isStagedPayment(b) || b.final_paid_at) return false;
+  const step = flowStep(b);
+  return step === "drive" || step === "pay_final";
+}
+
+/**
+ * Lý do CHƯA được bấm «xác nhận hoàn tất» (null = được bấm).
+ * Server (confirm_final) kiểm tra lại, đây chỉ để giao diện không cho bấm nhầm.
+ */
+export function finalConfirmBlock(b: BookingRow, role: "client" | "ptg", openFeedback = 0): string | null {
+  if (!b.drive_url) return "Photographer chưa gửi link Drive.";
+  if (isStagedPayment(b) && !b.final_paid_at) {
+    return role === "ptg"
+      ? `Khách chưa trả nốt ${FINAL_PCT}%. Chưa thể xác nhận hoàn tất.`
+      : `Hãy trả nốt ${FINAL_PCT}% trước khi xác nhận hoàn tất.`;
+  }
+  if (role === "ptg" && openFeedback > 0) {
+    return `Còn ${openFeedback} yêu cầu chỉnh sửa chưa xong. Hãy chỉnh, gửi lại Drive và đánh dấu "Đã chỉnh xong".`;
+  }
+  return null;
+}
+
 /** User đã trả, admin chưa ứng 20% */
 export function isProcessing(b: BookingRow) {
+  // Luồng mới: cọc xong là đơn có hiệu lực ngay, không còn bước chờ admin ứng tiền
+  if (isStagedPayment(b)) return false;
   if (b.status === "processing") return true;
   if ((b.status === "deposit_paid" || b.status === "paid") && !b.ptg_advance_paid_at && !b.final_paid_at) {
     return b.status !== "active" && b.status !== "handover" && b.status !== "closing" && b.status !== "completed";
@@ -221,6 +278,8 @@ export function isActiveOrder(b: BookingRow) {
   // Có Drive → đã sang bàn giao, không còn phase chụp
   if (b.drive_url || b.drive_submitted_at) return false;
   if (b.status === "active") return true;
+  // Luồng mới: đã đặt cọc 20% → đơn có hiệu lực
+  if (isStagedPayment(b) && (b.deposit_paid_at || ["processing", "deposit_paid", "paid"].includes(b.status))) return true;
   // deposit_paid + đã ứng cọc, chưa Drive
   if (b.ptg_advance_paid_at && !b.drive_url) return true;
   // status handover nhưng chưa có link = PTG bấm chụp xong sớm → vẫn coi là đang chụp
@@ -260,11 +319,14 @@ export function isFullyDone(b: BookingRow) {
 /* ───────── Flow từng bước (1 nút / bước) ─────────
  * wait_date     : đang chụp, chưa đến ngày → chỉ hiện chữ
  * shoot_confirm : đến ngày chụp → mỗi bên bấm «Xác nhận đơn thành công»
- * drive         : cả hai đã xác nhận → PTG gửi Drive, khách chờ
+ * drive         : cả hai đã xác nhận → PTG gửi Drive; khách có thể trả nốt trước
+ * await_drive   : khách đã trả nốt nhưng PTG chưa gửi Drive → PTG gửi, khách chờ
+ * pay_final     : PTG đã gửi Drive nhưng khách chưa trả nốt → khách trả, PTG chờ
+ *                 (cần đủ CẢ HAI: Drive + trả nốt mới sang review)
  * review        : đã có Drive → khách góp ý, 2 bên xác nhận hoàn tất
  * closing       : cả hai đã xác nhận hoàn tất → Memento xử lý
  */
-export type FlowStep = "none" | "wait_date" | "shoot_confirm" | "drive" | "review" | "closing" | "done";
+export type FlowStep = "none" | "wait_date" | "shoot_confirm" | "drive" | "await_drive" | "pay_final" | "review" | "closing" | "done";
 
 /** Ngày hôm nay theo giờ Việt Nam (YYYY-MM-DD). Server mới là nơi kiểm tra thật. */
 export function todayVN(): string {
@@ -288,9 +350,9 @@ export function bothShootConfirmed(b: BookingRow): boolean {
 export function flowStep(b: BookingRow): FlowStep {
   if (b.status === "completed" || b.drive_released_at) return "done";
   if (b.status === "closing" || bothSuccessConfirmed(b)) return "closing";
-  if (b.drive_url) return "review";
+  if (b.drive_url) return isAwaitingFinal(b) ? "pay_final" : "review";
   if (!isActiveOrder(b)) return "none";
-  if (bothShootConfirmed(b)) return "drive";
+  if (bothShootConfirmed(b)) return isStagedPayment(b) && b.final_paid_at ? "await_drive" : "drive";
   return isShootDay(b) ? "shoot_confirm" : "wait_date";
 }
 
@@ -318,6 +380,12 @@ export function silenceInfo(b: BookingRow): SilenceInfo | null {
     const a = b.shoot_confirm_client_at || "";
     const p = b.shoot_confirm_ptg_at || "";
     since = (a > p ? a : p) || b.shoot_done_at || b.updated_at || null;
+  } else if (step === "await_drive") {
+    waitingOn = "ptg";
+    since = b.final_paid_at || b.updated_at || null;
+  } else if (step === "pay_final") {
+    waitingOn = "client";
+    since = b.drive_submitted_at || b.updated_at || null;
   } else if (step === "review") {
     if (b.client_success_at && !b.ptg_success_at) {
       waitingOn = "ptg";
@@ -345,14 +413,21 @@ export function isPaid(b: BookingRow) {
 /** Nhãn hiển thị đẹp cho app */
 export function bookingPhaseLabel(b: BookingRow): string {
   if (b.status === "pending") return "Chờ xác nhận";
-  if (b.status === "confirmed") return "Chờ thanh toán";
+  if (b.status === "confirmed") return isStagedPayment(b) ? "Chờ đặt cọc" : "Chờ thanh toán";
+  if (isAwaitingFinal(b)) return `Chờ trả nốt ${FINAL_PCT}%`;
+  if (flowStep(b) === "await_drive") return "Chờ PTG gửi Drive";
   if (isProcessing(b)) return "Đang xử lý đơn";
   if (isHandover(b)) return "Bàn giao ảnh";
   if (isShooting(b) || isActiveOrder(b)) return "Đang chụp ảnh";
   if (b.status === "closing") return "Chờ xác nhận hoàn tất";
   if (b.status === "completed") return "Hoàn thành đơn";
   if (b.status === "rejected") return "Đã từ chối";
-  if (b.status === "cancelled") return "Đã hủy";
+  if (b.status === "cancelled") {
+    if (b.refund_status === "need_info") return "Cần thông tin hoàn tiền";
+    if (b.refund_status === "pending") return "Đang hoàn tiền";
+    if (b.refund_status === "done") return "Hủy thành công";
+    return "Đã hủy";
+  }
   return b.status;
 }
 
@@ -459,7 +534,7 @@ export async function createBooking(
     status: input.status || ("pending" as BookingStatus),
     payment_status: "unpaid" as PaymentStatus,
     deposit_amount: calcDeposit(total),
-    remaining_amount: 0,
+    remaining_amount: calcRemaining(total),
   };
 
   const { data, error } = await supabase.from("bookings").insert(row).select("*").single();
@@ -591,7 +666,66 @@ export async function submitDriveUrl(id: string, driveUrl: string, note?: string
 /** Mỗi bên xác nhận buổi chụp xong — server kiểm tra ngày chụp + đúng người (RPC confirm_shoot) */
 export async function confirmShoot(id: string): Promise<string | null> {
   const { error } = await supabase.rpc("confirm_shoot", { p_booking: id });
+  if (error) return error.message;
+  // Đọc lại để chắc chắn server đã ghi — không báo "đã xác nhận" giả khi RPC chạy nhưng 0 dòng đổi
+  const { data: uid } = await supabase.auth.getUser();
+  const me = uid.user?.id;
+  const { data: row, error: e2 } = await supabase
+    .from("bookings")
+    .select("client_id, photographer_user_id, shoot_confirm_client_at, shoot_confirm_ptg_at")
+    .eq("id", id)
+    .maybeSingle();
+  if (e2 || !row || !me) return null;
+  const ok = me === row.client_id ? !!row.shoot_confirm_client_at : !!row.shoot_confirm_ptg_at;
+  return ok ? null : "Máy chủ chưa ghi nhận xác nhận của bạn. Hãy thử lại hoặc báo admin (chạy sql/040).";
+}
+
+/* ───────── Tài khoản nhận hoàn tiền của khách ───────── */
+
+export type MyBank = {
+  bank_code: string;
+  bank_name: string | null;
+  bank_account: string;
+  bank_account_name: string;
+};
+
+export async function fetchMyBank(userId: string): Promise<MyBank | null> {
+  const { data } = await supabase
+    .from("user_bank_accounts")
+    .select("bank_code, bank_name, bank_account, bank_account_name")
+    .eq("user_id", userId)
+    .maybeSingle();
+  return (data as MyBank | null) ?? null;
+}
+
+export async function saveMyBank(userId: string, bank: MyBank): Promise<string | null> {
+  const { error } = await supabase.from("user_bank_accounts").upsert({
+    user_id: userId,
+    bank_code: bank.bank_code,
+    bank_name: bank.bank_name,
+    bank_account: bank.bank_account.replace(/\s/g, ""),
+    bank_account_name: bank.bank_account_name.trim().toUpperCase(),
+    updated_at: new Date().toISOString(),
+  });
   return error ? error.message : null;
+}
+
+/** Khách điền form hoàn tiền cho đơn đã hủy (RPC submit_refund_info) */
+export async function submitRefundInfo(id: string, bank: MyBank, save: boolean): Promise<string | null> {
+  const { error } = await supabase.rpc("submit_refund_info", {
+    p_booking: id,
+    p_bank_code: bank.bank_code,
+    p_bank_name: bank.bank_name,
+    p_account: bank.bank_account,
+    p_account_name: bank.bank_account_name,
+    p_save: save,
+  });
+  return error ? error.message : null;
+}
+
+/** Đơn đã hủy nhưng khoản hoàn cọc chưa xong (cần hiện nổi bật, không ẩn khỏi danh sách) */
+export function isRefundOpen(b: BookingRow): boolean {
+  return b.status === "cancelled" && (b.refund_status === "need_info" || b.refund_status === "pending");
 }
 
 /** User hoặc PTG bấm xác nhận hoàn tất đơn (sau khi có Drive) — RPC confirm_final tự chuyển closing khi đủ 2 bên */
@@ -760,4 +894,65 @@ export async function deleteBooking(id: string): Promise<string | null> {
   const all = readLocal().filter((r) => r.id !== id);
   writeLocal(all);
   return null;
+}
+
+
+/* ───────── Ghim lịch hẹn ───────── */
+
+export function isPinnedBy(b: BookingRow, userId: string | null): boolean {
+  if (!userId) return false;
+  if (userId === b.client_id) return !!b.pinned_by_client;
+  if (userId === b.photographer_user_id) return !!b.pinned_by_ptg;
+  return false;
+}
+
+/** Bật/tắt ghim (RPC toggle_pin_booking). Trả về trạng thái ghim mới */
+export async function togglePinBooking(id: string): Promise<{ pinned: boolean | null; error: string | null }> {
+  const { data, error } = await supabase.rpc("toggle_pin_booking", { p_booking: id });
+  if (error) return { pinned: null, error: error.message };
+  return { pinned: !!data, error: null };
+}
+
+/* ───────── Hủy deal / hủy đơn ─────────
+ * free   : chưa đóng tiền → hủy ngay, không cần bên kia đồng ý
+ * mutual : đã đặt cọc → cần cả hai bên đồng ý, hoàn 100% tiền cọc
+ * none   : không còn hủy được (đã trả đủ, đang chốt, hoàn tất, đã hủy...)
+ */
+export type CancelMode = "none" | "free" | "mutual";
+
+export function cancelMode(b: BookingRow): CancelMode {
+  if (["cancelled", "rejected", "completed", "closing"].includes(b.status)) return "none";
+  if (b.final_paid_at || b.drive_released_at || bothSuccessConfirmed(b)) return "none";
+  if (!isPaid(b)) return b.status === "pending" || b.status === "confirmed" ? "free" : "none";
+  return "mutual";
+}
+
+export type CancelRequestState = "none" | "mine" | "theirs";
+
+/** Ai đã bấm yêu cầu hủy (đã đóng cọc) */
+export function cancelRequestState(b: BookingRow, userId: string | null): CancelRequestState {
+  if (!userId) return "none";
+  const isClient = userId === b.client_id;
+  const isPtg = userId === b.photographer_user_id;
+  if (!isClient && !isPtg) return "none";
+  const mine = isClient ? b.cancel_req_client_at : b.cancel_req_ptg_at;
+  const theirs = isClient ? b.cancel_req_ptg_at : b.cancel_req_client_at;
+  if (mine) return "mine";
+  if (theirs) return "theirs";
+  return "none";
+}
+
+/** Gửi / đồng ý yêu cầu hủy (RPC request_cancel_booking). "cancelled" = cả hai đã đồng ý → đơn hủy, chờ hoàn cọc */
+export async function requestMutualCancel(
+  id: string
+): Promise<{ result: "requested" | "cancelled" | null; error: string | null }> {
+  const { data, error } = await supabase.rpc("request_cancel_booking", { p_booking: id });
+  if (error) return { result: null, error: error.message };
+  return { result: data === "cancelled" ? "cancelled" : "requested", error: null };
+}
+
+/** Rút yêu cầu hủy của mình (RPC withdraw_cancel_booking) */
+export async function withdrawCancelRequest(id: string): Promise<string | null> {
+  const { error } = await supabase.rpc("withdraw_cancel_booking", { p_booking: id });
+  return error ? error.message : null;
 }

@@ -19,3 +19,12 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# Giữ số dòng để đọc được báo cáo crash
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile
+
+# Giữ các hàm JS gọi vào Android (WebView)
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}

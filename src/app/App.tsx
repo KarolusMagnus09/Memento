@@ -35,6 +35,7 @@ import PersonalInfoScreen from "./screens/PersonalInfoScreen";
 import SettingsScreen from "./screens/SettingsScreen";
 import ChangeEmailFlow from "./screens/ChangeEmailFlow";
 import ChangePasswordFlow from "./screens/ChangePasswordFlow";
+import DeleteAccountFlow from "./screens/DeleteAccountFlow";
 import BecomePhotographerScreen from "./screens/BecomePhotographerScreen";
 import ContactUsScreen from "./screens/ContactUsScreen";
 import NotificationsScreen from "./screens/NotificationsScreen";
@@ -96,6 +97,10 @@ function AppInner() {
 
   const { profile, loading: profileLoading, error: profileError, refresh: refreshProfile } = useProfile(session?.user.id ?? null);
   const { photographers, loading, error, refresh: refreshPhotographers } = usePhotographers();
+  // Tài khoản đã xóa (xóa mềm) mà còn phiên đăng nhập trên máy này → đăng xuất ngay
+  useEffect(() => {
+    if (profile?.deleted_at) void signOutSafely();
+  }, [profile?.deleted_at]);
   const [activePhotographer, setActivePhotographer] = useState<Photographer | null>(null);
   const [selfBookingNotice, setSelfBookingNotice] = useState(false);
   const [requestPostedNotice, setRequestPostedNotice] = useState(false);
@@ -246,7 +251,7 @@ function AppInner() {
     setScreen("offer-chat");
   };
 
-  const showNav = !["login", "chat", "booking-confirm", "personal-info", "change-email", "change-password", "become-photographer", "admin-review", "edit-photographer", "create-request", "offer-chat"].includes(screen);
+  const showNav = !["login", "chat", "booking-confirm", "personal-info", "change-email", "change-password", "become-photographer", "admin-review", "edit-photographer", "create-request", "offer-chat", "delete-account"].includes(screen);
 
   const navigateTo = (s: Screen) => {
     setScreen(s);
@@ -411,7 +416,7 @@ function AppInner() {
   }
 
   // Screens that don't need real photographer data can render immediately.
-  const needsData = !["login", "profile", "personal-info", "privacy", "become-photographer", "contact-us", "notifications", "change-email", "change-password", "admin-review", "messages", "chat", "create-request", "my-requests", "offer-chat"].includes(screen);
+  const needsData = !["login", "profile", "personal-info", "privacy", "become-photographer", "contact-us", "notifications", "change-email", "change-password", "admin-review", "messages", "chat", "create-request", "my-requests", "offer-chat", "delete-account"].includes(screen);
 
   if (needsData && loading) {
     return (
@@ -495,6 +500,7 @@ function AppInner() {
           {screen === "privacy" && <SettingsScreen setScreen={navigateTo} profile={profile} />}
           {screen === "change-email" && <ChangeEmailFlow setScreen={navigateTo} profile={profile} refreshProfile={refreshProfile} setIgnoreRecoveryEvent={v => { ignoreRecoveryRef.current = v; }} />}
           {screen === "change-password" && <ChangePasswordFlow setScreen={navigateTo} profile={profile} setIgnoreRecoveryEvent={v => { ignoreRecoveryRef.current = v; }} />}
+          {screen === "delete-account" && <DeleteAccountFlow setScreen={navigateTo} profile={profile} setIgnoreRecoveryEvent={v => { ignoreRecoveryRef.current = v; }} />}
           {screen === "become-photographer" && <BecomePhotographerScreen setScreen={navigateTo} profile={profile} refreshProfile={refreshProfile} />}
           {screen === "contact-us" && <ContactUsScreen setScreen={navigateTo} profile={profile} />}
           {screen === "notifications" && <NotificationsScreen setScreen={navigateTo} />}

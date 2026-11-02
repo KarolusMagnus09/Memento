@@ -15,6 +15,8 @@ export type Profile = {
   /** Có giá trị = tài khoản đã bị admin ban */
   banned_at?: string | null;
   ban_reason?: string | null;
+  /** Có giá trị = tài khoản đã được chủ tài khoản xóa (xóa mềm) */
+  deleted_at?: string | null;
 };
 
 // Trigger `handle_new_user` tạo dòng profiles khi signUp — có thể trễ vài trăm ms.

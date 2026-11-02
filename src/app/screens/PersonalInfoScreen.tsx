@@ -16,10 +16,13 @@ export default function PersonalInfoScreen({
   setScreen,
   profile,
   refreshProfile,
+  onSaved,
 }: {
   setScreen: (s: Screen) => void;
   profile: Profile;
   refreshProfile: () => void;
+  /** Gọi sau khi lưu tên/avatar: App tải lại danh sách photographer + hồ sơ để thẻ ngoài khớp ngay */
+  onSaved?: () => void;
 }) {
   // ── Tên hiển thị + ảnh đại diện (gộp chung nút "Lưu" ở đầu trang) ───────
   const [name, setName] = useState(profile.full_name || profile.username);
@@ -74,6 +77,8 @@ export default function PersonalInfoScreen({
       if (error) throw error;
       setAvatarIsNew(false);
       refreshProfile();
+      // Trigger SQL 043 đã đồng bộ sang thẻ photographer / lịch hẹn; tải lại để màn hình khác thấy ngay
+      onSaved?.();
       setSaveInfo("Đã lưu thay đổi.");
       return true;
     } catch (e) {

@@ -382,7 +382,7 @@ function AppInner() {
               }}
             />
           )}
-          {screen === "personal-info" && profile && <PersonalInfoScreen setScreen={navigateTo} profile={profile} refreshProfile={refreshProfile} />}
+          {screen === "personal-info" && profile && <PersonalInfoScreen setScreen={navigateTo} profile={profile} refreshProfile={refreshProfile} onSaved={handleProfileSaved} />}
           {(screen === "profile" || screen === "personal-info") && !profile && (
             <div className="flex items-center justify-center min-h-screen px-6 text-center">
               <p className="text-sm text-muted-foreground">Không tải được hồ sơ. Bạn thử tải lại trang nhé.</p>

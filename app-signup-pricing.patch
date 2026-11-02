@@ -1,0 +1,595 @@
+diff --git a/src/app/components/shared/BirthDateInput.tsx b/src/app/components/shared/BirthDateInput.tsx
+new file mode 100644
+index 0000000..85b41d3
+--- /dev/null
++++ b/src/app/components/shared/BirthDateInput.tsx
+@@ -0,0 +1,155 @@
++import { useEffect, useRef, useState } from "react";
++import { AlertCircle } from "lucide-react";
++
++/** Tuổi tối thiểu để đăng ký làm nhiếp ảnh gia */
++export const MIN_AGE = 16;
++
++const ISO_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
++
++/** "DD", "MM", "YYYY" (chuỗi số người dùng gõ) → "YYYY-MM-DD" nếu là ngày có thật và không ở tương lai; ngược lại null. */
++export function toIsoDate(d: string, m: string, y: string): string | null {
++  if (!d || !m || y.length !== 4) return null;
++  const day = Number(d);
++  const month = Number(m);
++  const year = Number(y);
++  if (!Number.isInteger(day) || !Number.isInteger(month) || !Number.isInteger(year)) return null;
++  if (year < 1900 || month < 1 || month > 12 || day < 1) return null;
++  const dt = new Date(year, month - 1, day);
++  // new Date tự "tràn" ngày (31/02 → 03/03), nên đối chiếu lại để loại ngày không có thật
++  if (dt.getFullYear() !== year || dt.getMonth() !== month - 1 || dt.getDate() !== day) return null;
++  if (dt.getTime() > Date.now()) return null;
++  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
++}
++
++/** Tuổi (số năm tròn) tại thời điểm `today` của ngày sinh dạng "YYYY-MM-DD"; null nếu chuỗi không hợp lệ. */
++export function ageFromIso(iso: string, today: Date = new Date()): number | null {
++  const m = ISO_RE.exec(iso || "");
++  if (!m) return null;
++  const y = Number(m[1]);
++  const mo = Number(m[2]);
++  const d = Number(m[3]);
++  let age = today.getFullYear() - y;
++  const beforeBirthday = today.getMonth() + 1 < mo || (today.getMonth() + 1 === mo && today.getDate() < d);
++  if (beforeBirthday) age -= 1;
++  return age;
++}
++
++/** Đủ tuổi tối thiểu chưa? Chuỗi rỗng/không hợp lệ → false. */
++export function isOldEnough(iso: string, minAge: number = MIN_AGE): boolean {
++  const age = ageFromIso(iso);
++  return age !== null && age >= minAge;
++}
++
++/**
++ * Ô nhập ngày sinh bằng tay: 3 ô DD / MM / YYYY, không lịch, không kéo thả.
++ * - `value` / `onChange` dùng chuỗi ISO "YYYY-MM-DD"; chưa gõ đủ hoặc ngày không có thật thì onChange("").
++ * - Gõ đủ số ký tự của 1 ô thì tự nhảy sang ô kế; bấm xoá khi ô trống thì lùi về ô trước.
++ * - Chưa đủ `minAge` tuổi: hiện thông báo đỏ ngay dưới ô (bước tiếp theo bị chặn ở màn hình cha).
++ */
++export function BirthDateInput({
++  value,
++  onChange,
++  invalid = false,
++  minAge = MIN_AGE,
++}: {
++  value: string;
++  onChange: (iso: string) => void;
++  /** Viền đỏ (vd. khi bấm Tiếp tục mà chưa nhập) */
++  invalid?: boolean;
++  minAge?: number;
++}) {
++  const [d, setD] = useState("");
++  const [m, setM] = useState("");
++  const [y, setY] = useState("");
++  const refs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
++
++  // Nạp lại từ ngoài (vd. tự điền từ hồ sơ đã lưu) — chỉ khi khác với những gì đang gõ
++  useEffect(() => {
++    const mt = ISO_RE.exec(value || "");
++    if (!mt) return;
++    if (toIsoDate(d, m, y) === value) return;
++    setY(mt[1]);
++    setM(mt[2]);
++    setD(mt[3]);
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [value]);
++
++  function emit(nd: string, nm: string, ny: string) {
++    onChange(toIsoDate(nd, nm, ny) ?? "");
++  }
++
++  function handle(idx: 0 | 1 | 2, raw: string) {
++    const max = idx === 2 ? 4 : 2;
++    const digits = raw.replace(/\D/g, "").slice(0, max);
++    const nd = idx === 0 ? digits : d;
++    const nm = idx === 1 ? digits : m;
++    const ny = idx === 2 ? digits : y;
++    if (idx === 0) setD(digits);
++    if (idx === 1) setM(digits);
++    if (idx === 2) setY(digits);
++    emit(nd, nm, ny);
++    if (digits.length === max && idx < 2) refs[idx + 1].current?.focus();
++  }
++
++  function onKeyDown(idx: 0 | 1 | 2, e: React.KeyboardEvent<HTMLInputElement>) {
++    const cur = idx === 0 ? d : idx === 1 ? m : y;
++    if (e.key === "Backspace" && cur === "" && idx > 0) {
++      e.preventDefault();
++      refs[idx - 1].current?.focus();
++    }
++  }
++
++  // Gõ "5" rồi rời ô → thành "05"
++  function pad(idx: 0 | 1) {
++    const cur = idx === 0 ? d : m;
++    if (cur.length === 1 && cur !== "0") {
++      const p = `0${cur}`;
++      if (idx === 0) { setD(p); emit(p, m, y); } else { setM(p); emit(d, p, y); }
++    }
++  }
++
++  const complete = d.length > 0 && m.length > 0 && y.length === 4;
++  const iso = toIsoDate(d, m, y);
++  const age = iso ? ageFromIso(iso) : null;
++  const tooYoung = age !== null && age < minAge;
++  const badDate = complete && !iso;
++  const showRed = invalid || tooYoung || badDate;
++
++  const boxCls = "w-full px-3 py-2.5 rounded-xl bg-muted text-sm text-center outline-none";
++  const boxStyle = showRed ? { boxShadow: "0 0 0 1.5px #dc2626" } : undefined;
++
++  return (
++    <div>
++      <div className="flex items-center gap-2">
++        <input
++          ref={refs[0]} value={d} inputMode="numeric" autoComplete="off" maxLength={2} placeholder="DD" aria-label="Ngày sinh: ngày"
++          onChange={(e) => handle(0, e.target.value)} onKeyDown={(e) => onKeyDown(0, e)} onBlur={() => pad(0)}
++          className={boxCls} style={boxStyle}
++        />
++        <span className="text-muted-foreground">/</span>
++        <input
++          ref={refs[1]} value={m} inputMode="numeric" autoComplete="off" maxLength={2} placeholder="MM" aria-label="Ngày sinh: tháng"
++          onChange={(e) => handle(1, e.target.value)} onKeyDown={(e) => onKeyDown(1, e)} onBlur={() => pad(1)}
++          className={boxCls} style={boxStyle}
++        />
++        <span className="text-muted-foreground">/</span>
++        <input
++          ref={refs[2]} value={y} inputMode="numeric" autoComplete="off" maxLength={4} placeholder="YYYY" aria-label="Ngày sinh: năm"
++          onChange={(e) => handle(2, e.target.value)} onKeyDown={(e) => onKeyDown(2, e)}
++          className={`${boxCls} min-w-[84px]`} style={boxStyle}
++        />
++      </div>
++      {tooYoung ? (
++        <p className="text-[11px] font-semibold mt-1 flex items-center gap-1" style={{ color: "#dc2626" }}>
++          <AlertCircle size={11} /> Bạn chưa đủ {minAge} tuổi nên chưa thể đăng ký làm nhiếp ảnh gia.
++        </p>
++      ) : badDate ? (
++        <p className="text-[11px] font-semibold mt-1 flex items-center gap-1" style={{ color: "#dc2626" }}>
++          <AlertCircle size={11} /> Ngày sinh không hợp lệ, vui lòng kiểm tra lại (ngày/tháng/năm).
++        </p>
++      ) : (
++        <p className="text-[11px] text-muted-foreground mt-1">Nhập ngày/tháng/năm sinh. Bạn phải đủ {minAge} tuổi để đăng ký.</p>
++      )}
++    </div>
++  );
++}
+diff --git a/src/app/lib/authErrors.ts b/src/app/lib/authErrors.ts
+index 032c220..8881cd9 100644
+--- a/src/app/lib/authErrors.ts
++++ b/src/app/lib/authErrors.ts
+@@ -3,7 +3,8 @@ export function translateAuthError(message: string): string {
+   const rules: { test: RegExp; vi: (m: RegExpMatchArray) => string }[] = [
+     { test: /password should be at least (\d+) characters?/i, vi: (m) => `Mật khẩu tối thiểu ${m[1]} ký tự.` },
+     { test: /password should contain at least one character of each/i, vi: () => "Mật khẩu cần có đủ chữ thường, chữ hoa và số." },
+-    { test: /user already registered/i, vi: () => "Email này đã được đăng ký. Hãy đăng nhập hoặc dùng email khác." },
++    { test: /user already registered/i, vi: () => "Tài khoản này đã được đăng ký. Hãy đăng nhập hoặc dùng email khác." },
++    { test: /already (been )?registered|already exists|user_already_exists|email_exists/i, vi: () => "Tài khoản này đã được đăng ký. Hãy đăng nhập hoặc dùng email khác." },
+     { test: /user is banned|user_banned/i, vi: () => "Tài khoản này đã bị khóa. Liên hệ hỗ trợ nếu bạn cho rằng đây là nhầm lẫn." },
+     { test: /invalid login credentials/i, vi: () => "Email hoặc mật khẩu không đúng." },
+     { test: /email not confirmed/i, vi: () => "Email chưa được xác nhận. Kiểm tra hộp thư của bạn." },
+@@ -18,7 +19,7 @@ export function translateAuthError(message: string): string {
+     { test: /signups?\s*(is|are)?\s*disabled/i, vi: () => "Tính năng đăng ký hiện đang tắt." },
+     { test: /duplicate key value violates unique constraint.*username/i, vi: () => "Tên tài khoản này đã có người sử dụng." },
+     { test: /database error saving new user/i, vi: () => "Tên tài khoản này đã có người sử dụng, vui lòng thử tên khác." },
+-    { test: /a user with this email address has already been registered/i, vi: () => "Email này đã được đăng ký cho tài khoản khác." },
++    { test: /a user with this email address has already been registered/i, vi: () => "Tài khoản này đã được đăng ký. Hãy đăng nhập hoặc dùng email khác." },
+   ];
+   for (const r of rules) {
+     const m = message.match(r.test);
+diff --git a/src/app/lib/bookings.ts b/src/app/lib/bookings.ts
+index b043f22..b0b7bef 100644
+--- a/src/app/lib/bookings.ts
++++ b/src/app/lib/bookings.ts
+@@ -398,6 +398,7 @@ export function categoryLabel(cat: string) {
+   if (c === "makeup") return "Make Up";
+   if (c === "editor") return "Editor";
+   if (c === "rental") return "Thuê & phụ kiện";
++  if (c === "others") return "Khác";
+   return "Chụp ảnh";
+ }
+ 
+diff --git a/src/app/screens/AdminReviewScreen.tsx b/src/app/screens/AdminReviewScreen.tsx
+index cb15cf7..9150093 100644
+--- a/src/app/screens/AdminReviewScreen.tsx
++++ b/src/app/screens/AdminReviewScreen.tsx
+@@ -400,7 +400,9 @@ export default function AdminReviewScreen({ setScreen }: { setScreen: (s: Screen
+                               <div className="px-3 py-1.5 text-xs font-bold flex items-center justify-between" style={{ background: `${TEAL}10`, color: TEAL }}>
+                                 <span>{g.title || "Mục"}</span>
+                                 {g.category && (
+-                                  <span className="text-[10px] font-semibold opacity-70">{g.category}</span>
++                                  <span className="text-[10px] font-semibold opacity-70">
++                                    {({ photo: "Chụp ảnh", makeup: "Make Up", editor: "Editor", rental: "Thuê & phụ kiện", others: "Khác (tự đặt)" } as Record<string, string>)[g.category] ?? g.category}
++                                  </span>
+                                 )}
+                               </div>
+                               {(g.lines || []).map((l, li) => (
+diff --git a/src/app/screens/BecomePhotographerScreen.tsx b/src/app/screens/BecomePhotographerScreen.tsx
+index 66ae6c7..2abb96b 100644
+--- a/src/app/screens/BecomePhotographerScreen.tsx
++++ b/src/app/screens/BecomePhotographerScreen.tsx
+@@ -1,6 +1,7 @@
+ import { useBackHandler } from "../lib/backNavigation";
+ import { ChevronLeft, ChevronDown, CheckCircle, Plus, BookOpen, MapPin, X, Edit3, IdCard, ScanLine, AlertCircle } from "lucide-react";
+ import { Avatar } from "../components/shared/Avatar";
++import { BirthDateInput, MIN_AGE, isOldEnough } from "../components/shared/BirthDateInput";
+ import type { Screen } from "../types";
+ import type { Profile } from "../hooks/useProfile";
+ import { TEAL, TEAL_MID, TEAL_LIGHT, BG, VN_PROVINCES, styles, VN_BANKS } from "../constants";
+@@ -86,7 +87,8 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
+ 
+   // ── STEP 2 — Bảng giá dạng nhóm (category bắt buộc + list con) ───────────
+   // category giúp lọc / hiện tab "Thuê & phụ kiện" trên hồ sơ công khai
+-  type PriceCategory = "photo" | "makeup" | "editor" | "rental";
++  // "others" = dịch vụ tự đặt (nút "Thêm bảng giá"), không thuộc thể loại nào; lưu trên server đúng chữ "others" để sau này lọc
++  type PriceCategory = "photo" | "makeup" | "editor" | "rental" | "others";
+   type PriceLine = { id: string; name: string; price: string; detail: string };
+   type PriceGroup = { id: string; title: string; category: PriceCategory; lines: PriceLine[] };
+   const PRICE_CATEGORIES: { value: PriceCategory; label: string; hint: string }[] = [
+@@ -95,7 +97,7 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
+     { value: "editor", label: "Editor", hint: "Retouch, chỉnh sửa ảnh..." },
+     { value: "rental", label: "Thuê & phụ kiện", hint: "Studio, đèn, máy, đạo cụ..." },
+   ];
+-  const categoryLabel = (c: PriceCategory) => PRICE_CATEGORIES.find(x => x.value === c)?.label ?? c;
++  const categoryLabel = (c: PriceCategory) => (c === "others" ? "Khác (tự đặt)" : PRICE_CATEGORIES.find(x => x.value === c)?.label ?? c);
+ 
+   const [priceGroups, setPriceGroups] = useState<PriceGroup[]>([]);
+   const [showGroupForm, setShowGroupForm] = useState(false);
+@@ -105,6 +107,11 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
+   const [newLineName, setNewLineName] = useState("");
+   const [newLinePrice, setNewLinePrice] = useState("");
+   const [newLineDetail, setNewLineDetail] = useState("");
++  // "Thêm bảng giá": dịch vụ tự đặt tên + giá, lưu vào nhóm category "others"
++  const [showOtherForm, setShowOtherForm] = useState(false);
++  const [otherName, setOtherName] = useState("");
++  const [otherPrice, setOtherPrice] = useState("");
++  const [otherDetail, setOtherDetail] = useState("");
+ 
+   // Link minh chứng — giọng khuyến khích kiểu PotoNow
+   const [proofLink, setProofLink] = useState("");
+@@ -139,7 +146,8 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
+   function getStep1Missing(): string[] {
+     const missing: string[] = [];
+     if (!fullName.trim()) missing.push("fullName");
+-    if (!birthDate) missing.push("birthDate");
++    // Chưa nhập, ngày không có thật, hoặc chưa đủ tuổi tối thiểu → chặn không cho sang bước sau
++    if (!birthDate || !isOldEnough(birthDate, MIN_AGE)) missing.push("birthDate");
+     if (!phone.trim()) missing.push("phone");
+     if (!cccdFront || !cccdBack) missing.push("cccd");
+     if (!bankCode || !bankAccount.trim()) missing.push("bank");
+@@ -183,6 +191,25 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
+     clearFieldError("priceGroups");
+   }
+ 
++  function addOtherPrice() {
++    const name = otherName.trim();
++    const priceDigits = otherPrice.replace(/\D/g, "");
++    if (!name || !priceDigits) return;
++    const line: PriceLine = { id: `ln-${Date.now()}`, name, price: priceDigits, detail: otherDetail.trim() };
++    setPriceGroups(prev => {
++      const idx = prev.findIndex(g => g.category === "others");
++      if (idx === -1) {
++        return [...prev, { id: `grp-others-${Date.now()}`, title: "Dịch vụ khác", category: "others", lines: [line] }];
++      }
++      return prev.map((g, i) => (i === idx ? { ...g, lines: [...g.lines, line] } : g));
++    });
++    setOtherName("");
++    setOtherPrice("");
++    setOtherDetail("");
++    setShowOtherForm(false);
++    clearFieldError("priceGroups");
++  }
++
+   function removePriceGroup(id: string) {
+     setPriceGroups(prev => prev.filter(g => g.id !== id));
+     if (addingLineToGroupId === id) setAddingLineToGroupId(null);
+@@ -431,6 +458,7 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
+     setSubmitError(null);
+     try {
+       if (!profile?.id) throw new Error("Chưa đăng nhập. Vui lòng đăng nhập lại rồi gửi hồ sơ.");
++      if (!isOldEnough(birthDate, MIN_AGE)) throw new Error(`Bạn cần đủ ${MIN_AGE} tuổi để đăng ký làm nhiếp ảnh gia.`);
+ 
+       const bucket = "photographer-applications";
+       const base = profile.id;
+@@ -674,11 +702,12 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
+ 
+               <div className="mb-3" ref={setFieldRef("birthDate")}>
+                 <p className="text-xs font-semibold text-muted-foreground mb-1">Ngày sinh *</p>
+-                <input type="date" value={birthDate} onChange={e => { setBirthDate(e.target.value); clearFieldError("birthDate"); }}
+-                  className="w-full px-3 py-2.5 rounded-xl bg-muted text-sm outline-none"
+-                  style={errorFields.has("birthDate") ? { boxShadow: "0 0 0 1.5px #dc2626" } : undefined} />
+-                <p className="text-[11px] text-muted-foreground mt-1">Bạn phải đủ 16 tuổi để đăng ký.</p>
+-                <FieldError show={errorFields.has("birthDate")} />
++                <BirthDateInput
++                  value={birthDate}
++                  onChange={v => { setBirthDate(v); clearFieldError("birthDate"); }}
++                  invalid={errorFields.has("birthDate")}
++                />
++                {errorFields.has("birthDate") && !birthDate && <FieldError show />}
+               </div>
+ 
+               <div className="mb-3" ref={setFieldRef("phone")}>
+@@ -759,7 +788,7 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
+                   onChange={e => { setBankAccountName(e.target.value); clearFieldError("bank"); }}
+                   className="w-full px-3 py-2.5 rounded-xl bg-muted text-sm outline-none"
+                   style={errorFields.has("bank") && !bankAccountName.trim() ? { boxShadow: "0 0 0 1.5px #dc2626" } : undefined}
+-                  placeholder="HOANG VU DAT (in hoa, không dấu càng tốt)"
++                  placeholder="NGUYEN VAN A (in hoa, không dấu càng tốt)"
+                 />
+                 <FieldError show={errorFields.has("bank")} />
+               </div>
+@@ -1047,8 +1076,8 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
+                     <div className="min-w-0">
+                       <span className="inline-block text-[10px] font-black px-2 py-0.5 rounded-full mb-1"
+                         style={{
+-                          background: g.category === "rental" ? "#fef3c7" : g.category === "makeup" ? "#fce7f3" : g.category === "editor" ? "#e0e7ff" : "#e8f5f0",
+-                          color: g.category === "rental" ? "#b45309" : g.category === "makeup" ? "#be185d" : g.category === "editor" ? "#4338ca" : TEAL,
++                          background: g.category === "others" ? "#f3f4f6" : g.category === "rental" ? "#fef3c7" : g.category === "makeup" ? "#fce7f3" : g.category === "editor" ? "#e0e7ff" : "#e8f5f0",
++                          color: g.category === "others" ? "#4b5563" : g.category === "rental" ? "#b45309" : g.category === "makeup" ? "#be185d" : g.category === "editor" ? "#4338ca" : TEAL,
+                         }}>
+                         {categoryLabel(g.category)}
+                       </span>
+@@ -1158,6 +1187,41 @@ export default function BecomePhotographerScreen({ setScreen, profile, refreshPr
+                 </button>
+               )}
+ 
++              {/* ── Thêm bảng giá: dịch vụ tự đặt, không thuộc thể loại nào (server ghi category = "others") ── */}
++              <div className="mt-3 pt-3 border-t border-border">
++                <p className="text-xs font-bold mb-0.5" style={{ color: TEAL }}>Thêm bảng giá</p>
++                <p className="text-[11px] text-muted-foreground mb-2 leading-relaxed">
++                  Dịch vụ riêng của bạn: tự đặt tên và giá, không cần chọn thể loại ở trên. Hệ thống sẽ xếp vào mục <strong>Khác</strong>.
++                </p>
++                {showOtherForm ? (
++                  <div className="p-3 rounded-xl border-2" style={{ borderColor: TEAL_LIGHT }}>
++                    <input value={otherName} onChange={e => setOtherName(e.target.value.slice(0, 80))}
++                      className="w-full px-3 py-2 rounded-xl bg-muted text-sm outline-none mb-2"
++                      placeholder="Tên dịch vụ (vd: Chụp ảnh thú cưng)" autoFocus />
++                    <input value={formatVnd(otherPrice)} onChange={e => setOtherPrice(e.target.value.replace(/\D/g, ""))}
++                      inputMode="numeric"
++                      className="w-full px-3 py-2 rounded-xl bg-muted text-sm outline-none mb-2"
++                      placeholder="Giá VND" />
++                    <input value={otherDetail} onChange={e => setOtherDetail(e.target.value.slice(0, 120))}
++                      className="w-full px-3 py-2 rounded-xl bg-muted text-sm outline-none mb-3"
++                      placeholder="Chi tiết (tuỳ chọn)" />
++                    <div className="flex gap-2">
++                      <button type="button" onClick={addOtherPrice}
++                        disabled={!otherName.trim() || !otherPrice.replace(/\D/g, "")}
++                        className="flex-1 py-2 rounded-xl text-xs font-bold text-white disabled:opacity-40" style={{ background: TEAL }}>Thêm</button>
++                      <button type="button" onClick={() => { setShowOtherForm(false); setOtherName(""); setOtherPrice(""); setOtherDetail(""); }}
++                        className="flex-1 py-2 rounded-xl text-xs font-bold border-2" style={{ borderColor: TEAL, color: TEAL }}>Hủy</button>
++                    </div>
++                  </div>
++                ) : (
++                  <button type="button" onClick={() => setShowOtherForm(true)}
++                    className="w-full py-2.5 rounded-xl text-xs font-bold border-2 border-dashed flex items-center justify-center gap-1.5"
++                    style={{ borderColor: TEAL_LIGHT, color: TEAL }}>
++                    <Plus size={14} /> Thêm bảng giá
++                  </button>
++                )}
++              </div>
++
+               <FieldError show={errorFields.has("priceGroups")} />
+ 
+               {(needsMakeupPrice || needsEditPrice || needsRentalPrice) && (
+diff --git a/src/app/screens/BookingScreen.tsx b/src/app/screens/BookingScreen.tsx
+index e55b7a3..c0776a4 100644
+--- a/src/app/screens/BookingScreen.tsx
++++ b/src/app/screens/BookingScreen.tsx
+@@ -56,7 +56,7 @@ export default function BookingScreen({
+ 
+   /** Nhóm theo category để UI giống bảng giá */
+   const groups = useMemo(() => {
+-    const order = ["photo", "makeup", "editor", "rental"];
++    const order = ["photo", "makeup", "editor", "rental", "others"];
+     const map = new Map<string, { category: string; title: string; items: BookingServiceOption[] }>();
+     for (const o of options) {
+       const cat = o.category || "photo";
+@@ -332,7 +332,9 @@ export default function BookingScreen({
+                       className="text-[10px] font-black px-2 py-0.5 rounded-full"
+                       style={{
+                         background:
+-                          g.category === "makeup"
++                          g.category === "others"
++                            ? "#f3f4f6"
++                            : g.category === "makeup"
+                             ? "#fce7f3"
+                             : g.category === "editor"
+                               ? "#e0e7ff"
+@@ -340,7 +342,9 @@ export default function BookingScreen({
+                                 ? "#fef3c7"
+                                 : "#e8f5f0",
+                         color:
+-                          g.category === "makeup"
++                          g.category === "others"
++                            ? "#4b5563"
++                            : g.category === "makeup"
+                             ? "#be185d"
+                             : g.category === "editor"
+                               ? "#4338ca"
+diff --git a/src/app/screens/EditPhotographerProfileScreen.tsx b/src/app/screens/EditPhotographerProfileScreen.tsx
+index 2c4a680..09639e1 100644
+--- a/src/app/screens/EditPhotographerProfileScreen.tsx
++++ b/src/app/screens/EditPhotographerProfileScreen.tsx
+@@ -47,7 +47,7 @@ function uid() {
+ function emptyGroup(cat = "photo"): PriceGroup {
+   return {
+     id: uid(),
+-    title: cat === "rental" ? "Thuê & phụ kiện" : cat === "makeup" ? "Make Up" : "Chụp ảnh",
++    title: cat === "others" ? "Dịch vụ khác" : cat === "rental" ? "Thuê & phụ kiện" : cat === "makeup" ? "Make Up" : "Chụp ảnh",
+     category: cat,
+     lines: [{ id: uid(), name: "", price: "", detail: "" }],
+   };
+@@ -534,14 +534,33 @@ export default function EditPhotographerProfileScreen({
+             <p className="font-bold text-sm" style={{ color: TEAL }}>
+               Bảng giá
+             </p>
+-            <button
+-              type="button"
+-              onClick={() => setPriceGroups((g) => [...g, emptyGroup("photo")])}
+-              className="text-xs font-bold flex items-center gap-1"
+-              style={{ color: TEAL }}
+-            >
+-              <Plus size={14} /> Thêm nhóm
+-            </button>
++            <div className="flex items-center gap-3">
++              <button
++                type="button"
++                onClick={() => setPriceGroups((g) => [...g, emptyGroup("photo")])}
++                className="text-xs font-bold flex items-center gap-1"
++                style={{ color: TEAL }}
++              >
++                <Plus size={14} /> Thêm nhóm
++              </button>
++              {/* Thêm bảng giá: dịch vụ tự đặt, không thuộc thể loại nào → category "others" */}
++              <button
++                type="button"
++                onClick={() =>
++                  setPriceGroups((gs) => {
++                    const idx = gs.findIndex((x) => x.category === "others");
++                    if (idx === -1) return [...gs, emptyGroup("others")];
++                    return gs.map((x, i) =>
++                      i === idx ? { ...x, lines: [...x.lines, { id: uid(), name: "", price: "", detail: "" }] } : x
++                    );
++                  })
++                }
++                className="text-xs font-bold flex items-center gap-1"
++                style={{ color: TEAL }}
++              >
++                <Plus size={14} /> Thêm bảng giá
++              </button>
++            </div>
+           </div>
+           {priceGroups.map((g, gi) => (
+             <div key={g.id} className="border border-border rounded-xl p-3 space-y-2">
+@@ -569,6 +588,7 @@ export default function EditPhotographerProfileScreen({
+                   <option value="makeup">Makeup</option>
+                   <option value="editor">Edit</option>
+                   <option value="rental">Thuê</option>
++                  <option value="others">Khác</option>
+                 </select>
+                 <button
+                   type="button"
+diff --git a/src/app/screens/LoginScreen.tsx b/src/app/screens/LoginScreen.tsx
+index eddb658..1180b90 100644
+--- a/src/app/screens/LoginScreen.tsx
++++ b/src/app/screens/LoginScreen.tsx
+@@ -7,7 +7,9 @@ import { validatePasswordStrength, PASSWORD_HINT } from "../lib/password";
+ import { Captcha, CAPTCHA_ENABLED } from "../components/Captcha";
+ import { OtpInput } from "../components/shared/OtpInput";
+ import { FieldBox } from "../components/shared/FieldBox";
+-import { useState } from "react";
++import { useEffect, useState } from "react";
++
++const ALREADY_REGISTERED_MSG = "Tài khoản này đã được đăng ký. Hãy đăng nhập hoặc dùng email khác.";
+ 
+ // Danh sách phương thức khôi phục mật khẩu — hiện chỉ Email hoạt động,
+ // các phương thức khác để sẵn khung, bật enabled: true khi làm xong backend cho nó.
+@@ -34,6 +36,8 @@ export default function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
+   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+   const [captchaResetKey, setCaptchaResetKey] = useState(0);
++  // Bước nhập OTP không hiện captcha; chỉ khi bấm "Gửi lại" (server yêu cầu captcha) mới hiện ra để xác minh
++  const [showResendCaptcha, setShowResendCaptcha] = useState(false);
+ 
+   function resetCaptcha() {
+     setCaptchaToken(null);
+@@ -209,7 +213,15 @@ export default function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
+       });
+       setLoading(false);
+       resetCaptcha();
+-      if (error) { applyServerError(error.message, ["email", "password"]); return; }
++      if (error) {
++        const code = (error as { code?: string }).code;
++        if (code === "user_already_exists" || code === "email_exists" || /already (been )?registered|already exists/i.test(error.message)) {
++          setFieldErrors({ email: ALREADY_REGISTERED_MSG });
++          return;
++        }
++        applyServerError(error.message, ["email", "password"]);
++        return;
++      }
+       // Supabase KHÔNG trả `error` khi signUp() bằng 1 email đã tồn tại và
+       // đã xác nhận — đây là hành vi cố ý để chống dò email (user
+       // enumeration): nó trả về user "giả" với identities: [] thay vì báo
+@@ -218,7 +230,7 @@ export default function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
+       // khoản — đúng là bug đang gặp. Nên phải tự kiểm tra identities rỗng
+       // để coi như lỗi "email đã được đăng ký".
+       if (data.user && data.user.identities && data.user.identities.length === 0) {
+-        applyServerError("User already registered", ["email", "password"]);
++        setFieldErrors({ email: ALREADY_REGISTERED_MSG });
+         return;
+       }
+       setMode("verify-otp");
+@@ -228,9 +240,11 @@ export default function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
+   async function handleResend() {
+     setError(null);
+     if (CAPTCHA_ENABLED && !captchaToken) {
+-      setError("Vui lòng hoàn thành xác minh CAPTCHA.");
++      // Chưa có token → hiện ô xác minh ngay tại đây; xác minh xong sẽ tự gửi lại (effect bên dưới)
++      setShowResendCaptcha(true);
+       return;
+     }
++    setShowResendCaptcha(false);
+     setLoading(true);
+     const { error } = await supabase.auth.resend({
+       type: "signup", email,
+@@ -242,6 +256,11 @@ export default function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
+     setInfo("Đã gửi lại mã. Kiểm tra email nhé.");
+   }
+ 
++  useEffect(() => {
++    if (showResendCaptcha && captchaToken) void handleResend();
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [captchaToken, showResendCaptcha]);
++
+   const BackButton = ({ onClick }: { onClick: () => void }) => (
+     <button onClick={onClick} className="w-9 h-9 rounded-full bg-white border border-border flex items-center justify-center mb-8">
+       <ChevronLeft size={18} style={{ color: TEAL }} />
+@@ -266,9 +285,12 @@ export default function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
+           </button>
+         </div>
+ 
+-        <div className="flex justify-center mt-3">
+-          <Captcha onToken={setCaptchaToken} resetKey={captchaResetKey} />
+-        </div>
++        {showResendCaptcha && CAPTCHA_ENABLED && (
++          <div className="flex flex-col items-center gap-1 mt-3">
++            <p className="text-[11px] text-muted-foreground">Xác minh nhanh để gửi lại mã</p>
++            <Captcha onToken={setCaptchaToken} resetKey={captchaResetKey} />
++          </div>
++        )}
+ 
+         {error && <p className="text-xs text-red-600 text-center mt-3">{error}</p>}
+         {info && <p className="text-xs text-center mt-3" style={{ color: TEAL_LIGHT }}>{info}</p>}
+diff --git a/src/app/screens/PhotographerProfileScreen.tsx b/src/app/screens/PhotographerProfileScreen.tsx
+index 30838a7..0543785 100644
+--- a/src/app/screens/PhotographerProfileScreen.tsx
++++ b/src/app/screens/PhotographerProfileScreen.tsx
+@@ -789,17 +789,20 @@ export default function PhotographerProfileScreen({
+                         <span className="text-[10px] font-black px-2 py-0.5 rounded-full"
+                           style={{
+                             background:
+-                              g.category === "makeup" ? "#fce7f3"
++                              g.category === "others" ? "#f3f4f6"
++                              : g.category === "makeup" ? "#fce7f3"
+                               : g.category === "editor" ? "#e0e7ff"
+                               : g.category === "rental" ? "#fef3c7"
+                               : "#e8f5f0",
+                             color:
+-                              g.category === "makeup" ? "#be185d"
++                              g.category === "others" ? "#4b5563"
++                              : g.category === "makeup" ? "#be185d"
+                               : g.category === "editor" ? "#4338ca"
+                               : g.category === "rental" ? "#b45309"
+                               : TEAL,
+                           }}>
+-                          {g.category === "makeup" ? "Make Up"
++                          {g.category === "others" ? "Khác"
++                            : g.category === "makeup" ? "Make Up"
+                             : g.category === "editor" ? "Editor"
+                             : g.category === "rental" ? "Thuê & phụ kiện"
+                             : "Chụp ảnh"}

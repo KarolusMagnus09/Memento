@@ -2,11 +2,11 @@ import { Search, X, SlidersHorizontal } from "lucide-react";
 import type { Screen, Photographer } from "../types";
 import { TEAL, TEAL_LIGHT, BG } from "../constants";
 import { useMemo, useState } from "react";
+import { StyleFilter } from "../components/shared/StyleFilter";
+import { setDiscover, useDiscover } from "../lib/discoverState";
 import { PhotographerCard } from "../components/shared/PhotographerCard";
 import { PhotographerFilterSheet } from "../components/shared/PhotographerFilterSheet";
 import {
-  EMPTY_FILTER,
-  type PhotographerFilter,
   filterPhotographers,
   isFilterActive,
   countActiveFilters,
@@ -26,8 +26,8 @@ export default function SearchScreen({
   toggleSave: (id: number) => void;
   photographers: Photographer[];
 }) {
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<PhotographerFilter>(EMPTY_FILTER);
+  // Dùng chung với Trang chủ: tên đã gõ, bộ lọc và phong cách được mang sang và lưu lại
+  const { query, filter } = useDiscover();
   const [filterOpen, setFilterOpen] = useState(false);
 
   const availableLocations = useMemo(() => {
@@ -38,7 +38,7 @@ export default function SearchScreen({
     return Array.from(set);
   }, [photographers]);
 
-  // Khám phá: KHÔNG còn 4 category UI — thể loại nằm trong bộ lọc
+  // Chỉ gồm photographer thật (danh sách đã loại admin); tìm theo tên + bộ lọc + phong cách
   const results = useMemo(
     () =>
       filterPhotographers({
@@ -61,12 +61,12 @@ export default function SearchScreen({
           <Search size={16} className="text-muted-foreground" />
           <input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="flex-1 bg-transparent text-sm outline-none text-foreground"
-            placeholder="Tìm kiếm nhiếp ảnh gia, studio..."
+            onChange={(e) => setDiscover({ query: e.target.value })}
+            className="flex-1 min-w-0 bg-transparent text-sm outline-none text-foreground"
+            placeholder="Tìm nhiếp ảnh gia theo tên..."
           />
           {query && (
-            <button type="button" onClick={() => setQuery("")}>
+            <button type="button" aria-label="Xóa tìm kiếm" onClick={() => setDiscover({ query: "" })}>
               <X size={14} className="text-muted-foreground" />
             </button>
           )}
@@ -94,6 +94,15 @@ export default function SearchScreen({
             </span>
           )}
         </button>
+
+        <h3 className="font-bold text-foreground mb-3">Phong cách</h3>
+        <div className="mb-4">
+          {/* Cùng nguồn dữ liệu với mục "Thể loại chụp" trong bộ lọc */}
+          <StyleFilter
+            selected={filter.shootingStyles}
+            onChange={(subs) => setDiscover({ filter: { ...filter, shootingStyles: subs } })}
+          />
+        </div>
 
         <p className="text-xs font-semibold mb-3" style={{ color: TEAL_LIGHT }}>
           {results.length} photographer đã được tìm thấy
@@ -128,7 +137,7 @@ export default function SearchScreen({
         open={filterOpen}
         value={filter}
         onClose={() => setFilterOpen(false)}
-        onApply={setFilter}
+        onApply={(f) => setDiscover({ filter: f })}
         availableLocations={availableLocations}
       />
     </div>

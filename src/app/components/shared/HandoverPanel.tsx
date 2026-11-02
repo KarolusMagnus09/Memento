@@ -10,6 +10,7 @@ import {
   confirmOrderSuccess,
   bothSuccessConfirmed,
   fetchPhotoFeedback,
+  finalConfirmBlock,
   resolveFeedback,
   isFullyDone,
   submitDriveUrl,
@@ -81,7 +82,7 @@ function StatusChip({ resolved }: { resolved: boolean }) {
 
 /** Nút xác nhận hoàn tất đơn dùng chung 2 bên: bấm trước → chờ bên kia; bên kia nhận popup thông báo */
 function FinalConfirm({
-  booking, role, accent, notify, onChanged, extraWarn,
+  booking, role, accent, notify, onChanged, extraWarn, openFeedback = 0,
 }: {
   booking: BookingRow;
   role: "ptg" | "client";
@@ -89,6 +90,8 @@ function FinalConfirm({
   notify: (msg: string) => void;
   onChanged: () => void;
   extraWarn?: string;
+  /** Số yêu cầu chỉnh sửa chưa xong (PTG phải xử lý hết mới được chốt) */
+  openFeedback?: number;
 }) {
   const [ask, setAsk] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -98,6 +101,19 @@ function FinalConfirm({
     role === "client" ? booking.photographer_name || "Photographer" : booking.client_name || "Khách hàng";
 
   if (!booking.drive_url) return null;
+
+  // Chưa trả nốt / còn yêu cầu chỉnh → không cho bấm, hiện rõ lý do
+  const block = mine ? null : finalConfirmBlock(booking, role, openFeedback);
+  if (block) {
+    return (
+      <div
+        className="rounded-xl px-3 py-2.5 text-xs font-semibold"
+        style={{ background: "#F3F4F6", color: "#4b5563", border: "1px solid #E5E7EB" }}
+      >
+        🔒 {block}
+      </div>
+    );
+  }
 
   if (mine) {
     return (
@@ -214,6 +230,16 @@ function PtgPanel({ booking, accent, onChanged, notify }: Props) {
         </div>
       ) : (
         <>
+          {!hasLink && booking.final_paid_at && Number(booking.remaining_amount) > 0 && (
+            <div className="rounded-xl px-3 py-2 text-[11px] font-semibold" style={{ background: "#ECFDF5", border: "1px solid #A7F3D0", color: "#065f46" }}>
+              ✅ Khách đã trả nốt phần còn lại. Gửi link Drive để khách xem ảnh.
+            </div>
+          )}
+          {!hasLink && !booking.final_paid_at && Number(booking.remaining_amount) > 0 && (
+            <div className="rounded-xl px-3 py-2 text-[11px]" style={{ background: "#F3F4F6", border: "1px solid #E5E7EB", color: "#4b5563" }}>
+              Link chỉ mở cho khách sau khi khách trả nốt phần còn lại.
+            </div>
+          )}
           <div className="rounded-xl px-3 py-2 text-[11px] leading-relaxed" style={{ background: "#fffbeb", border: "1px solid #fde68a", color: "#92400e" }}>
             <strong>Trước khi gửi:</strong> mở Google Drive → Chia sẻ → chọn "Bất kỳ ai có đường liên kết" với quyền{" "}
             <strong>Người xem (Viewer)</strong>. Đừng để quyền <strong>Người chỉnh sửa (Editor)</strong> để khách không vô tình
@@ -299,7 +325,7 @@ function PtgPanel({ booking, accent, onChanged, notify }: Props) {
       </div>
 
       {hasLink && !locked && (
-        <FinalConfirm booking={booking} role="ptg" accent={accent} notify={notify} onChanged={onChanged} />
+        <FinalConfirm booking={booking} role="ptg" accent={accent} notify={notify} onChanged={onChanged} openFeedback={pending} />
       )}
     </div>
   );

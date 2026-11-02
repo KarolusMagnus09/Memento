@@ -3,6 +3,7 @@ import { Search, Trash2 } from "lucide-react";
 import type { Screen } from "../types";
 import { TEAL, TEAL_LIGHT, BG } from "../constants";
 import { Avatar } from "../components/shared/Avatar";
+import { DeletedBadge } from "../components/shared/DeletedBadge";
 import {
   conversationToTarget,
   fetchConversations,
@@ -216,6 +217,7 @@ export default function MessagesScreen({
                   type="button"
                   onClick={() => onOpenChat(conversationToTarget(c), "messages")}
                   className="flex items-center gap-3 bg-white p-4 rounded-2xl border border-border active:bg-muted transition-colors text-left w-full"
+                  style={c.partner_deleted ? { borderColor: "#fecaca", background: "#fffafa" } : undefined}
                 >
                   {c.kind === "admin" ? (
                     <span
@@ -229,14 +231,23 @@ export default function MessagesScreen({
                   )}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2">
-                      <p className={`text-sm truncate ${unread ? "font-black" : "font-bold"}`}>{c.partner_name}</p>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <p className={`text-sm truncate ${unread ? "font-black" : "font-bold"}`}>{c.partner_name}</p>
+                        {c.partner_deleted && <DeletedBadge />}
+                      </div>
                       <p className="text-xs text-muted-foreground flex-shrink-0">{formatListTime(c.last_at)}</p>
                     </div>
                     <p className={`text-xs truncate mt-0.5 ${unread ? "font-semibold text-foreground" : "text-muted-foreground"}`}>
                       {preview}
                     </p>
-                    {c.kind === "booking" && !c.can_send && (
-                      <p className="text-[11px] text-muted-foreground mt-0.5">Chỉ xem lại</p>
+                    {c.partner_deleted ? (
+                      <p className="text-[11px] font-semibold mt-0.5" style={{ color: "#dc2626" }}>
+                        Tài khoản đã bị xóa · chỉ xem lại, không thể nhắn tin mới
+                      </p>
+                    ) : (
+                      c.kind === "booking" && !c.can_send && (
+                        <p className="text-[11px] text-muted-foreground mt-0.5">Chỉ xem lại</p>
+                      )
                     )}
                   </div>
                   {unread && (

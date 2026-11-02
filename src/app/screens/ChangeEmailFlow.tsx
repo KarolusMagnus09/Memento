@@ -1,5 +1,5 @@
 import { useBackHandler } from "../lib/backNavigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronLeft, CheckCircle2 } from "lucide-react";
 import type { Screen } from "../types";
 import type { Profile } from "../hooks/useProfile";
@@ -7,6 +7,8 @@ import { TEAL, TEAL_MID, BG } from "../constants";
 import { OtpInput } from "../components/shared/OtpInput";
 import { FieldBox } from "../components/shared/FieldBox";
 import { supabase } from "../lib/supabase";
+import { setPendingAction, clearPendingAction } from "../lib/pendingAction";
+import { verifyMyPassword } from "../lib/verifyPassword";
 import { translateAuthError } from "../lib/authErrors";
 import { Captcha, CAPTCHA_ENABLED } from "../components/Captcha";
 
@@ -33,6 +35,9 @@ export default function ChangeEmailFlow({
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [captchaResetKey, setCaptchaResetKey] = useState(0);
 
+  // Thoát màn hình thì dọn cờ đánh dấu (để mail "Quên mật khẩu" sau này không bị nhầm nội dung)
+  useEffect(() => () => { void clearPendingAction(); }, []);
+
   function resetCaptcha() {
     setCaptchaToken(null);
     setCaptchaResetKey(k => k + 1);
@@ -57,18 +62,19 @@ export default function ChangeEmailFlow({
     if (CAPTCHA_ENABLED && !captchaToken) { setError("Vui lòng hoàn thành xác minh CAPTCHA."); return; }
     setError(null);
     setBusy(true);
-    const { error: err } = await supabase.auth.signInWithPassword({
-      email: profile.email, password,
-      options: { captchaToken: captchaToken ?? undefined },
-    });
-    if (err) {
+    // Kiểm tra mật khẩu bằng RPC (không dùng CAPTCHA) để token CAPTCHA chỉ dùng 1 lần cho việc gửi OTP.
+    const check = await verifyMyPassword(password);
+    if (check.result !== "ok") {
       setBusy(false);
-      resetCaptcha();
-      setError("Mật khẩu không đúng, vui lòng thử lại.");
+      setError(
+        check.result === "wrong" ? "Mật khẩu không đúng, vui lòng thử lại."
+        : check.result === "locked" ? "Bạn nhập sai quá nhiều lần, vui lòng thử lại sau 15 phút."
+        : translateAuthError(check.message ?? ""),
+      );
       return;
     }
-    // Gửi mã xác minh tới email hiện tại luôn, dùng chung token CAPTCHA vừa
-    // giải (token dùng 1 lần, phải dùng trước khi bị reset).
+    // Gửi mã xác minh tới email hiện tại (token CAPTCHA vừa giải được dùng đúng 1 lần ở đây).
+    await setPendingAction("change_email");
     const { error: otpErr } = await supabase.auth.resetPasswordForEmail(profile.email, {
       captchaToken: captchaToken ?? undefined,
     });
@@ -91,6 +97,7 @@ export default function ChangeEmailFlow({
     setIgnoreRecoveryEvent(false);
     setBusy(false);
     if (err) { setError(translateAuthError(err.message)); return; }
+    void clearPendingAction();
     setOtp("");
     setStep("new-email");
   }

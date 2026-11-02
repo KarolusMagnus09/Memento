@@ -115,6 +115,15 @@ export function applyPhotographerFilter(
   return out;
 }
 
+function foldText(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .toLowerCase();
+}
+
 export function filterPhotographers(opts: {
   list: Photographer[];
   query?: string;
@@ -123,22 +132,10 @@ export function filterPhotographers(opts: {
   filter: PhotographerFilter;
   savedIds?: number[];
 }): Photographer[] {
-  const q = (opts.query || "").trim().toLowerCase();
+  // Tìm theo TÊN photographer (không phân biệt hoa/thường và dấu: "nghi" khớp "Nghị")
+  const q = foldText(opts.query || "").trim();
   let list = opts.list.filter((p) => {
-    if (q) {
-      const hay = [
-        p.name,
-        p.specialty,
-        ...(Array.isArray(p.tags) ? p.tags : []),
-        ...(Array.isArray(p.shooting_styles) ? p.shooting_styles : []),
-        ...(Array.isArray(p.work_locations) ? p.work_locations : []),
-        p.location,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      if (!hay.includes(q)) return false;
-    }
+    if (q && !foldText(p.name || "").includes(q)) return false;
     if (!matchesStyle(p, opts.styleGroup ?? null, opts.subcategory ?? null)) return false;
     return true;
   });

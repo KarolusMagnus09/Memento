@@ -581,8 +581,13 @@ export default function BookingScreen({
                 <p className="font-bold mb-1">Chi phí & luồng tiền</p>
                 <p>• Tạm tính dịch vụ: {formatVnd(totalPrice)}</p>
                 <p>• Phí dịch vụ Memento (10%): {formatVnd(Math.round(totalPrice * 0.1))}</p>
-                <p>• Bạn thanh toán: <strong>{formatVnd(totalPrice)}</strong></p>
-                <p className="mt-1">Sau khi bạn thanh toán, photographer nhận trước 20%. Khi lịch hẹn hoàn tất, Memento chuyển phần còn lại (sau khi trừ phí 10%).</p>
+                <p>• Tổng bạn thanh toán: <strong>{formatVnd(totalPrice)}</strong></p>
+                <p className="mt-1">
+                  • Đặt cọc 20% (<strong>{formatVnd(Math.round(totalPrice * 0.2))}</strong>) chỉ khi photographer đồng ý — hủy lúc này không mất phí.
+                  Nếu sau đó hai bên cùng đồng ý hủy, cọc được hoàn 100%.
+                </p>
+                <p>• Sau buổi chụp, bạn trả nốt 80% (<strong>{formatVnd(totalPrice - Math.round(totalPrice * 0.2))}</strong>) để nhận link Drive ảnh.</p>
+                <p>• Hoàn tất: photographer nhận 90%, Memento giữ phí 10%.</p>
               </div>
             <button
           type="button"

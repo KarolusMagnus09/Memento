@@ -4,7 +4,8 @@ export type Screen =
   | "messages" | "chat" | "profile" | "personal-info"
   | "privacy" | "become-photographer" | "booking-confirm" | "contact-us"
   | "notifications" | "change-email" | "change-password"
-  | "admin-review" | "edit-photographer" | "create-request" | "my-requests" | "offer-chat";
+  | "admin-review" | "edit-photographer" | "create-request" | "my-requests" | "offer-chat"
+  | "delete-account";
 
 export type Board = {
   id: string;

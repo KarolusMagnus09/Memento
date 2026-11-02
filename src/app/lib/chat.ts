@@ -1,5 +1,6 @@
 import { supabase } from "./supabase";
 import type { BookingRow } from "./bookings";
+import { DELETED_USER_NAME, fetchDeletedUserIds, isDeletedUserName } from "./deletedAccount";
 
 export type ConversationKind = "booking" | "admin";
 
@@ -16,6 +17,8 @@ export type ConversationItem = {
   unread_count: number;
   /** true = còn đơn hợp lệ giữa hai bên → được gửi tin; false = chỉ xem lại */
   can_send: boolean;
+  /** true = đối tác đã xóa tài khoản (tên "Người dùng đã bị xóa", không avatar, không gửi được tin mới) */
+  partner_deleted?: boolean;
 };
 
 export type ChatMessage = {
@@ -36,6 +39,8 @@ export type ChatTarget = {
   partnerName: string;
   partnerAvatar: string | null;
   canSend: boolean;
+  /** Đối tác đã xóa tài khoản → chỉ xem lại, hiện nhãn "Đã xóa" */
+  partnerDeleted?: boolean;
 };
 
 export const MAX_MESSAGE_LENGTH = 2000;
@@ -57,20 +62,24 @@ export function conversationToTarget(c: ConversationItem): ChatTarget {
     id: c.conversation_id,
     kind: c.kind,
     partnerName: c.partner_name,
-    partnerAvatar: c.partner_avatar,
-    canSend: c.can_send,
+    partnerAvatar: c.partner_deleted ? null : c.partner_avatar,
+    canSend: c.can_send && !c.partner_deleted,
+    partnerDeleted: !!c.partner_deleted,
   };
 }
 
 /** Dựng ChatTarget từ một đơn (nút "Chat" trong Lịch hẹn). */
 export function bookingToChatTarget(b: BookingRow, userId: string | null, conversationId: string): ChatTarget {
   const iAmClient = userId === b.client_id;
+  const name = (iAmClient ? b.photographer_name : b.client_name) || "Người dùng";
+  const deleted = isDeletedUserName(name);
   return {
     id: conversationId,
     kind: "booking",
-    partnerName: (iAmClient ? b.photographer_name : b.client_name) || "Người dùng",
-    partnerAvatar: (iAmClient ? b.photographer_avatar : b.client_avatar) ?? null,
-    canSend: bookingAllowsChat(b.status),
+    partnerName: deleted ? DELETED_USER_NAME : name,
+    partnerAvatar: deleted ? null : (iAmClient ? b.photographer_avatar : b.client_avatar) ?? null,
+    canSend: !deleted && bookingAllowsChat(b.status),
+    partnerDeleted: deleted,
   };
 }
 
@@ -79,7 +88,19 @@ export function bookingToChatTarget(b: BookingRow, userId: string | null, conver
 export async function fetchConversations(): Promise<{ items: ConversationItem[]; error: string | null }> {
   const { data, error } = await supabase.rpc("list_my_conversations");
   if (error) return { items: [], error: error.message };
-  return { items: Array.isArray(data) ? (data as ConversationItem[]) : [], error: null };
+  const items = Array.isArray(data) ? (data as ConversationItem[]) : [];
+
+  // Đối tác đã xóa tài khoản: nhận ra qua tên "Người dùng đã bị xóa" hoặc hỏi server (deleted_user_ids)
+  const gone = await fetchDeletedUserIds(items.filter((c) => c.kind === "booking").map((c) => c.partner_id));
+  return {
+    items: items.map((c) => {
+      const deleted = c.kind === "booking" && (isDeletedUserName(c.partner_name) || (!!c.partner_id && gone.has(c.partner_id)));
+      return deleted
+        ? { ...c, partner_deleted: true, partner_name: DELETED_USER_NAME, partner_avatar: null, can_send: false }
+        : c;
+    }),
+    error: null,
+  };
 }
 
 /** Mở (hoặc lấy) cuộc trò chuyện của một đơn. Chỉ 2 bên của đơn mới mở được. */
